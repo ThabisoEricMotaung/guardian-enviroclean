@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
+import { QuoteRequestSuccess } from "@/components/quote-request-success";
+import type { QuoteRequestFieldErrors } from "@/lib/validation/quote-request";
 
 const SERVICE_OPTIONS = [
   { value: "MATTRESS", label: "Mattress Cleaning" },
@@ -19,8 +21,12 @@ type PendingPhoto = {
   previewUrl: string;
 };
 
+type SubmitStatus = "idle" | "submitting" | "success" | "error";
+
 const fieldClasses =
   "mt-1 w-full rounded-[3px] border border-[var(--line)] bg-transparent px-3 py-2.5 text-sm text-[var(--foreground)] placeholder:text-[var(--muted)] focus:border-[var(--guardian-deep)] focus:outline-none";
+
+const fieldErrorClasses = "mt-1.5 text-sm text-red-600";
 
 export function RequestQuoteForm() {
   const serviceGroupName = useId();
@@ -28,6 +34,10 @@ export function RequestQuoteForm() {
 
   const [service, setService] = useState<string | null>(null);
   const [photos, setPhotos] = useState<PendingPhoto[]>([]);
+  const [status, setStatus] = useState<SubmitStatus>("idle");
+  const [fieldErrors, setFieldErrors] = useState<QuoteRequestFieldErrors>({});
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [submittedName, setSubmittedName] = useState<string | null>(null);
 
   // Preview-only — nothing here uploads anywhere yet. Revoke object URLs
   // on unmount/replace so we don't leak memory during a long session.
@@ -64,8 +74,70 @@ export function RequestQuoteForm() {
     });
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (status === "submitting") return;
+
+    const formData = new FormData(event.currentTarget);
+    const name = String(formData.get("name") ?? "");
+    const phone = String(formData.get("phone") ?? "");
+    const area = String(formData.get("area") ?? "");
+    const description = String(formData.get("description") ?? "");
+
+    setServerError(null);
+
+    if (!service) {
+      setFieldErrors({ service: "Please choose a service." });
+      return;
+    }
+    setFieldErrors({});
+    setStatus("submitting");
+
+    // Deliberately not sending `photos` — photo upload isn't wired up
+    // yet this milestone (see the notice in the Photos section below).
+    try {
+      const response = await fetch("/api/quote-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, phone, service, area, description }),
+      });
+      const payload: {
+        ok?: boolean;
+        error?: string;
+        fieldErrors?: QuoteRequestFieldErrors;
+      } | null = await response.json().catch(() => null);
+
+      if (response.ok && payload?.ok) {
+        setSubmittedName(name.trim());
+        setStatus("success");
+        return;
+      }
+
+      if (response.status === 422 && payload?.fieldErrors) {
+        setFieldErrors(payload.fieldErrors);
+        setStatus("idle");
+        return;
+      }
+
+      setServerError(
+        payload?.error ??
+          "Something went wrong. Please try again or message us on WhatsApp.",
+      );
+      setStatus("error");
+    } catch {
+      setServerError(
+        "Something went wrong. Please try again or message us on WhatsApp.",
+      );
+      setStatus("error");
+    }
+  }
+
+  if (status === "success" && submittedName) {
+    return <QuoteRequestSuccess name={submittedName} />;
+  }
+
   return (
-    <form className="mt-10 space-y-10">
+    <form className="mt-10 space-y-10" onSubmit={handleSubmit} noValidate>
       {/* Section 1 — Your details */}
       <fieldset>
         <legend className="text-xs font-semibold tracking-[0.14em] text-[var(--guardian-deep)] uppercase">
@@ -76,7 +148,22 @@ export function RequestQuoteForm() {
             <label htmlFor="name" className="block text-sm font-medium text-[var(--foreground)]">
               Name
             </label>
-            <input id="name" name="name" type="text" placeholder="Your name" className={fieldClasses} />
+            <input
+              id="name"
+              name="name"
+              type="text"
+              placeholder="Your name"
+              required
+              maxLength={200}
+              className={fieldClasses}
+              aria-invalid={Boolean(fieldErrors.name)}
+              aria-describedby={fieldErrors.name ? "name-error" : undefined}
+            />
+            {fieldErrors.name && (
+              <p id="name-error" className={fieldErrorClasses}>
+                {fieldErrors.name}
+              </p>
+            )}
           </div>
           <div>
             <label htmlFor="phone" className="block text-sm font-medium text-[var(--foreground)]">
@@ -88,8 +175,17 @@ export function RequestQuoteForm() {
               type="tel"
               inputMode="tel"
               placeholder="082 123 4567"
+              required
+              maxLength={30}
               className={fieldClasses}
+              aria-invalid={Boolean(fieldErrors.phone)}
+              aria-describedby={fieldErrors.phone ? "phone-error" : undefined}
             />
+            {fieldErrors.phone && (
+              <p id="phone-error" className={fieldErrorClasses}>
+                {fieldErrors.phone}
+              </p>
+            )}
           </div>
         </div>
       </fieldset>
@@ -124,6 +220,9 @@ export function RequestQuoteForm() {
             );
           })}
         </div>
+        {fieldErrors.service && (
+          <p className={fieldErrorClasses}>{fieldErrors.service}</p>
+        )}
       </fieldset>
 
       {/* Section 3 — Area */}
@@ -140,8 +239,17 @@ export function RequestQuoteForm() {
             name="area"
             type="text"
             placeholder="e.g. Menlyn, Pretoria"
+            required
+            maxLength={200}
             className={fieldClasses}
+            aria-invalid={Boolean(fieldErrors.area)}
+            aria-describedby={fieldErrors.area ? "area-error" : undefined}
           />
+          {fieldErrors.area && (
+            <p id="area-error" className={fieldErrorClasses}>
+              {fieldErrors.area}
+            </p>
+          )}
         </div>
       </fieldset>
 
@@ -155,8 +263,17 @@ export function RequestQuoteForm() {
             name="description"
             rows={4}
             placeholder="e.g. 3-seater couch and two chairs, with some stains on the cushions."
+            required
+            maxLength={2000}
             className={fieldClasses}
+            aria-invalid={Boolean(fieldErrors.description)}
+            aria-describedby={fieldErrors.description ? "description-error" : undefined}
           />
+          {fieldErrors.description && (
+            <p id="description-error" className={fieldErrorClasses}>
+              {fieldErrors.description}
+            </p>
+          )}
         </div>
       </fieldset>
 
@@ -167,6 +284,11 @@ export function RequestQuoteForm() {
         </legend>
         <p className="mt-1 text-sm text-[var(--muted)]">
           Photos help us understand the job and prepare your quote.
+        </p>
+        <p className="mt-1 text-sm font-medium text-amber-700">
+          Photo attachments aren&apos;t sent with your request yet — we&apos;re
+          switching this on soon. Describe the job in detail above, or send
+          photos directly via WhatsApp after you submit.
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -210,28 +332,35 @@ export function RequestQuoteForm() {
         </div>
       </fieldset>
 
-      {/* Submit — intentionally inert this milestone */}
+      {/* Submit */}
       <div>
+        {serverError && (
+          <p
+            role="alert"
+            className="mb-3 rounded-[3px] border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {serverError}
+          </p>
+        )}
         <button
-          type="button"
-          disabled
-          aria-disabled="true"
-          title="Online submission launches in a future update"
-          className="w-full cursor-not-allowed rounded-[3px] bg-[var(--guardian-deep)]/40 px-6 py-3 text-sm font-medium tracking-wide text-white"
+          type="submit"
+          disabled={status === "submitting"}
+          aria-disabled={status === "submitting"}
+          className="w-full rounded-[3px] bg-[var(--guardian-deep)] px-6 py-3 text-sm font-medium tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Send Quote Request
+          {status === "submitting" ? "Sending…" : "Send Quote Request"}
         </button>
         <p className="mt-3 text-center text-sm text-[var(--muted)]">
-          Online submission isn&apos;t live yet.{" "}
+          Prefer WhatsApp?{" "}
           <a
             href={whatsappLink()}
             target="_blank"
             rel="noopener noreferrer"
             className="font-medium text-[var(--guardian-deep)] underline underline-offset-2"
           >
-            Message us on WhatsApp
+            Message us directly
           </a>{" "}
-          ({PHONE_INTL_DISPLAY}) and we&apos;ll reply personally.
+          ({PHONE_INTL_DISPLAY}).
         </p>
       </div>
     </form>

@@ -212,15 +212,45 @@ Supabase-specific: RLS policies, the `private.is_admin()` /
 its Neon-native replacement), and the three Supabase client variants
 (`src/lib/supabase/client.ts` / `server.ts` / `admin.ts`).
 
+## Quote Request Pipeline — Pass 1
+
+Live: `FORM → SERVER VALIDATION → NEON POSTGRES → REAL SUCCESS STATE`.
+
+- `POST /api/quote-requests` (`src/app/api/quote-requests/route.ts`) —
+  the only write path for a public quote request. Validates with
+  `src/lib/validation/quote-request.ts`, then calls
+  `insertWebsiteEnquiry` (`src/lib/quote-requests.ts`), which inserts
+  exactly one `jobs` row via the pooled `pg` connection in
+  `src/lib/db.ts` — parameterized query, `status = 'NEW_ENQUIRY'`,
+  `source = 'WEBSITE'`. No `job_photos` row is created.
+- `src/components/request-quote-form.tsx` submits real `fetch()` JSON to
+  that route and only shows `QuoteRequestSuccess` after a genuine `201`
+  response — never optimistically, never on a timer.
+- **Photos are not sent or persisted in Pass 1.** The photo picker stays
+  visible (still local-preview-only, as it always was) with an inline
+  notice that attachments aren't transmitted yet, so customers aren't
+  misled into thinking a photo they picked was actually received.
+
+**Public abuse protection is deliberately incomplete after Pass 1** —
+this endpoint is intentionally public (customers have no account), and
+right now it has only: strict server-side validation, a best-effort
+request-size cap, parameterized queries, and generic (non-leaking) error
+responses. There is **no honeypot, no CAPTCHA/Turnstile, and no rate
+limiting yet** — Pass 3 adds honeypot + Turnstile. Do not treat this
+endpoint as production-hardened, and do not launch it to real public
+traffic, before that lands.
+
 ## What still needs to happen
 
 1. Review and apply `db/migrations/0001_init.sql` (see **Applying the
-   migration** above) — not done yet, pending your review.
+   migration** above) — done; see git/deployment history for when.
 2. Add `@neondatabase/auth`, implement the Better Auth route handler and
    the `ADMIN_EMAILS` check, and build the actual Job Manager
    login/protected routes.
-3. Add the chosen Object Storage client and wire up the quote-submission
-   route (validate input → upload photos → insert `jobs` +
-   `job_photos` rows).
-4. Create Cecil's one admin account once (2) is ready, then set
+3. Add the chosen Object Storage client and wire photo upload into the
+   quote-submission route (`job_photos` rows) — Pass 1 intentionally
+   stops short of this.
+4. Add honeypot + Turnstile to `/api/quote-requests` (Pass 3) before any
+   real public launch.
+5. Create Cecil's one admin account once (2) is ready, then set
    `ADMIN_EMAILS` to his address.
