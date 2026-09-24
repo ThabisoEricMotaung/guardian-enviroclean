@@ -240,6 +240,75 @@ limiting yet** — Pass 3 adds honeypot + Turnstile. Do not treat this
 endpoint as production-hardened, and do not launch it to real public
 traffic, before that lands.
 
+## Quote Request Pipeline — Pass 2
+
+Extends Pass 1 with optional photo attachments:
+`FORM (+ photos) → SERVER VALIDATION → JOBS INSERT → PHOTO VALIDATION →
+PRIVATE UPLOAD → JOB_PHOTOS INSERT → RESPONSE (full or partial success)`.
+
+- **Request format switched from JSON to `multipart/form-data`.** The
+  form (`src/components/request-quote-form.tsx`) posts a `FormData` body
+  (text fields + zero-or-more `photos` file entries); the route reads it
+  with `request.formData()`. No base64 encoding.
+- **Object storage approach**: the raw `@aws-sdk/client-s3` client
+  (`src/lib/storage.ts`), not the Files SDK. The installed
+  `neon-object-storage` skill recommends the Files SDK "first" as the
+  general default, but that pulls in 4 packages
+  (`files-sdk` + 3 `@aws-sdk/*` presign peers) for a unified API whose
+  presign/download features this pass doesn't use — no presigned URLs
+  are implemented here at all. The raw client needs only
+  `@aws-sdk/client-s3`'s `PutObjectCommand`/`DeleteObjectCommand`, which
+  is exactly this pass's requirement, and is documented as a fully
+  supported alternative, not a workaround. `new S3Client({ forcePathStyle: true })`
+  reads credentials/endpoint/region from the injected `AWS_*` env vars
+  automatically, per the skill.
+- **Photo validation** (`src/lib/validation/photo.ts`): max 4 files;
+  max 3 MB per file; max 4 MB combined; rejects zero-byte files;
+  identifies the real format via magic-byte sniffing (JPEG/PNG/WebP
+  only) rather than trusting the client's declared MIME type or
+  filename extension. **HEIC/HEIF is explicitly not supported this
+  pass** — recognizing it needs ISO-BMFF `ftyp`-box parsing and,
+  practically, a server-side decode step for browser preview, which is
+  materially more infrastructure than this pass's scope; a customer
+  whose phone shares an unconverted HEIC file falls back to WhatsApp.
+- **Object key structure**: `quote-requests/<job-id>/<random-uuid>.<ext>`
+  — `<ext>` comes from the sniffed format, never the customer's
+  filename, and the key never contains name/phone/area or any other PII.
+- **Vercel's request-body ceiling drove the size limits.** Vercel
+  Functions enforce a hard **4.5 MB** total request-body limit
+  (`413 FUNCTION_PAYLOAD_TOO_LARGE`), platform-side, regardless of
+  runtime: https://vercel.com/docs/functions/limitations#request-body-size.
+  The 3 MB/4 MB photo caps above (plus the route's own 4.4 MB
+  content-length pre-check) are sized to fit under that ceiling with
+  headroom for text fields and multipart framing — not arbitrary
+  choices. A real consequence: a single already-large phone photo can
+  consume most of that budget, leaving little room for a second one in
+  the same request. Lifting this later means direct-to-bucket presigned
+  client uploads (explicitly out of scope this pass).
+- **Critical failure semantics** — the enquiry is persisted *before*
+  any photo is touched, and nothing afterward can make it disappear:
+  - Text validation fails → nothing persisted, nothing uploaded (`422`).
+  - `jobs` insert fails → nothing uploaded, generic `500`, no success.
+  - `jobs` insert succeeds → response is always `ok: true` /
+    `201` from here on, even if every photo fails.
+  - Each accepted photo is uploaded, then a `job_photos` row is
+    inserted. If the upload fails, that photo is simply not attached
+    (nothing to clean up — it was never written). If the upload
+    *succeeds* but the `job_photos` insert fails, `src/lib/storage.ts`'s
+    `deleteJobPhoto` is called as best-effort cleanup; if that delete
+    also fails, the result is a rare orphaned object with no DB
+    row — logged server-side, not retried, and not currently reconciled
+    by any background job (accepted limitation for this pass's scope).
+- **Response contract**: `{ ok: true }` when no photos were submitted
+  (unchanged from Pass 1); `{ ok: true, photos: { requested, accepted } }`
+  otherwise. The client treats `requested > accepted` as a partial
+  result and shows `QuoteRequestSuccess`'s `photoIssue` notice (still the
+  same "received" success state — the copy never suggests the enquiry
+  itself was affected) with the WhatsApp fallback.
+- **Client UX**: the Pass 1 "photos aren't sent yet" notice is gone,
+  replaced with the actual format/size limits. The form still won't
+  clear until the server confirms the `jobs` row was persisted.
+
 ## What still needs to happen
 
 1. Review and apply `db/migrations/0001_init.sql` (see **Applying the
@@ -247,10 +316,13 @@ traffic, before that lands.
 2. Add `@neondatabase/auth`, implement the Better Auth route handler and
    the `ADMIN_EMAILS` check, and build the actual Job Manager
    login/protected routes.
-3. Add the chosen Object Storage client and wire photo upload into the
-   quote-submission route (`job_photos` rows) — Pass 1 intentionally
-   stops short of this.
+3. Add a presigned-URL read path (Files SDK or
+   `@aws-sdk/s3-request-presigner`) for the future Job Manager photo
+   viewer — Pass 2 only writes objects, it never reads/presigns them.
 4. Add honeypot + Turnstile to `/api/quote-requests` (Pass 3) before any
    real public launch.
 5. Create Cecil's one admin account once (2) is ready, then set
    `ADMIN_EMAILS` to his address.
+6. Decide whether HEIC/HEIF support and/or lifting the photo size caps
+   (via presigned direct-to-bucket uploads) are worth the added
+   complexity, once real customer usage shows whether they're needed.

@@ -35,3 +35,16 @@ export async function insertWebsiteEnquiry(
   }
   return { id: row.id };
 }
+
+// One row per successfully uploaded photo. Called only after the
+// storage upload itself has succeeded — see route.ts's partial-success
+// handling for what happens if this throws (upload already happened).
+export async function insertJobPhoto(
+  jobId: string,
+  storagePath: string,
+): Promise<void> {
+  await db.query(
+    `insert into job_photos (job_id, storage_path) values ($1, $2)`,
+    [jobId, storagePath],
+  );
+}

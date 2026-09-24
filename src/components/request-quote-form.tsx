@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
 import { QuoteRequestSuccess } from "@/components/quote-request-success";
 import type { QuoteRequestFieldErrors } from "@/lib/validation/quote-request";
+import { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_TOTAL_PHOTO_BYTES } from "@/lib/validation/photo";
 
 const SERVICE_OPTIONS = [
   { value: "MATTRESS", label: "Mattress Cleaning" },
@@ -12,8 +13,6 @@ const SERVICE_OPTIONS = [
   { value: "CAR_INTERIOR", label: "Car Interior Cleaning" },
   { value: "OTHER", label: "Other / Not Sure" },
 ] as const;
-
-const MAX_PHOTOS = 4;
 
 type PendingPhoto = {
   id: string;
@@ -38,9 +37,11 @@ export function RequestQuoteForm() {
   const [fieldErrors, setFieldErrors] = useState<QuoteRequestFieldErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [submittedName, setSubmittedName] = useState<string | null>(null);
+  const [photoIssue, setPhotoIssue] = useState(false);
 
-  // Preview-only — nothing here uploads anywhere yet. Revoke object URLs
-  // on unmount/replace so we don't leak memory during a long session.
+  // Revoke object URLs on unmount/replace so we don't leak memory during
+  // a long session — these are local previews only; the actual files
+  // are read fresh from `photos` state and sent on submit.
   useEffect(() => {
     return () => {
       for (const photo of photos) URL.revokeObjectURL(photo.previewUrl);
@@ -93,21 +94,34 @@ export function RequestQuoteForm() {
     setFieldErrors({});
     setStatus("submitting");
 
-    // Deliberately not sending `photos` — photo upload isn't wired up
-    // yet this milestone (see the notice in the Photos section below).
+    const requestBody = new FormData();
+    requestBody.append("name", name);
+    requestBody.append("phone", phone);
+    requestBody.append("service", service);
+    requestBody.append("area", area);
+    requestBody.append("description", description);
+    for (const photo of photos) {
+      requestBody.append("photos", photo.file, photo.file.name);
+    }
+
     try {
+      // No Content-Type header — the browser sets the multipart
+      // boundary itself. Setting it manually here would break parsing.
       const response = await fetch("/api/quote-requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, phone, service, area, description }),
+        body: requestBody,
       });
       const payload: {
         ok?: boolean;
         error?: string;
         fieldErrors?: QuoteRequestFieldErrors;
+        photos?: { requested: number; accepted: number };
       } | null = await response.json().catch(() => null);
 
       if (response.ok && payload?.ok) {
+        const requested = payload.photos?.requested ?? 0;
+        const accepted = payload.photos?.accepted ?? 0;
+        setPhotoIssue(requested > accepted);
         setSubmittedName(name.trim());
         setStatus("success");
         return;
@@ -133,7 +147,7 @@ export function RequestQuoteForm() {
   }
 
   if (status === "success" && submittedName) {
-    return <QuoteRequestSuccess name={submittedName} />;
+    return <QuoteRequestSuccess name={submittedName} photoIssue={photoIssue} />;
   }
 
   return (
@@ -283,12 +297,9 @@ export function RequestQuoteForm() {
           Add Photos
         </legend>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Photos help us understand the job and prepare your quote.
-        </p>
-        <p className="mt-1 text-sm font-medium text-amber-700">
-          Photo attachments aren&apos;t sent with your request yet — we&apos;re
-          switching this on soon. Describe the job in detail above, or send
-          photos directly via WhatsApp after you submit.
+          Photos help us understand the job and prepare your quote. JPEG,
+          PNG or WebP, up to {MAX_PHOTO_BYTES / (1024 * 1024)} MB each (
+          {MAX_TOTAL_PHOTO_BYTES / (1024 * 1024)} MB total for all photos).
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
