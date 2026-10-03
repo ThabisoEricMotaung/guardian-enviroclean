@@ -1,14 +1,16 @@
+import { ipAddress } from "@vercel/functions";
 import { NextResponse, type NextRequest } from "next/server";
 import { insertJobPhoto, insertWebsiteEnquiry } from "@/lib/quote-requests";
 import { validateQuoteRequest } from "@/lib/validation/quote-request";
 import { validatePhotoBatch } from "@/lib/validation/photo";
 import { buildJobPhotoKey, deleteJobPhoto, uploadJobPhoto } from "@/lib/storage";
+import { verifyTurnstileToken } from "@/lib/turnstile";
+import { notifyCecilOfEnquiry } from "@/lib/notifications";
 
 // Public endpoint — prospective customers must reach this without an
-// account. Pass 2's anti-abuse posture is still minimal (strict
-// validation + a request-size cap only). Honeypot + Turnstile land in
-// Pass 3 — do not treat this endpoint as production-hardened until then.
-// See docs/neon-foundation.md, "Quote Request Pipeline — Pass 2".
+// account. See docs/neon-foundation.md, "Quote Request Pipeline — Pass 3"
+// for the full honeypot/Turnstile/notification design and its
+// intentional limits (still no rate limiting or queue/retry infra).
 //
 // Vercel Functions enforce a hard 4.5 MB total request-body ceiling
 // (https://vercel.com/docs/functions/limitations#request-body-size),
@@ -18,6 +20,14 @@ import { buildJobPhotoKey, deleteJobPhoto, uploadJobPhoto } from "@/lib/storage"
 // it is not itself the reason photos are capped at 3 MB / 4 MB
 // aggregate (see src/lib/validation/photo.ts for that).
 const MAX_REQUEST_BYTES = 4.4 * 1024 * 1024;
+
+// Bait field name deliberately unremarkable (a plausible "company
+// website" field, not literally named "honeypot") — see
+// docs/neon-foundation.md for why, and why a populated honeypot gets the
+// same response shape as a genuine empty-photo success rather than a
+// distinct rejection: a bot that can tell it was caught can adjust and
+// retry; one that just sees "success" has no signal to learn from.
+const HONEYPOT_FIELD = "website";
 
 export async function POST(request: NextRequest) {
   const contentLength = Number(request.headers.get("content-length"));
@@ -30,6 +40,23 @@ export async function POST(request: NextRequest) {
     formData = await request.formData();
   } catch {
     return NextResponse.json({ ok: false, error: "Malformed request." }, { status: 400 });
+  }
+
+  const honeypotValue = formData.get(HONEYPOT_FIELD);
+  if (typeof honeypotValue === "string" && honeypotValue.trim() !== "") {
+    return NextResponse.json({ ok: true }, { status: 201 });
+  }
+
+  const turnstileToken = formData.get("cf-turnstile-response");
+  const verification = await verifyTurnstileToken(
+    typeof turnstileToken === "string" ? turnstileToken : "",
+    ipAddress(request),
+  );
+  if (!verification.ok) {
+    return NextResponse.json(
+      { ok: false, error: "We couldn't verify your request. Please try again." },
+      { status: 400 },
+    );
   }
 
   const result = validateQuoteRequest({
@@ -69,8 +96,8 @@ export async function POST(request: NextRequest) {
 
   // From here on, the enquiry is safely persisted. Nothing below may
   // cause it to be reported as lost to the customer, even if every
-  // photo fails — see docs/neon-foundation.md, "Critical failure
-  // semantics".
+  // photo fails, or notifying Cecil fails — see docs/neon-foundation.md,
+  // "Critical failure semantics".
   const files = formData.getAll("photos").filter((value): value is File => value instanceof File);
   const { accepted, requestedCount } = await validatePhotoBatch(files);
 
@@ -99,6 +126,26 @@ export async function POST(request: NextRequest) {
         console.error("[quote-requests] cleanup delete also failed:", cleanupError);
       }
     }
+  }
+
+  // Best-effort, single attempt — a failure here must never change the
+  // response below. notifyCecilOfEnquiry is designed to never throw (it
+  // catches and logs internally), but this try/catch is defense-in-depth
+  // for the one guarantee that matters most in this route: a
+  // notification problem can never turn a persisted enquiry into a
+  // failure response.
+  try {
+    await notifyCecilOfEnquiry({
+      customerName: result.data.customerName,
+      phone: result.data.phone,
+      service: result.data.service,
+      area: result.data.area,
+      description: result.data.description,
+      photosRequested: requestedCount,
+      photosAccepted: acceptedCount,
+    });
+  } catch (error) {
+    console.error("[quote-requests] Cecil notification threw unexpectedly:", error);
   }
 
   if (requestedCount === 0) {

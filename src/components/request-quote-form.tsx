@@ -3,8 +3,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
 import { QuoteRequestSuccess } from "@/components/quote-request-success";
+import { TurnstileWidget } from "@/components/turnstile-widget";
 import type { QuoteRequestFieldErrors } from "@/lib/validation/quote-request";
 import { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_TOTAL_PHOTO_BYTES } from "@/lib/validation/photo";
+
+// Bait field name — see src/app/api/quote-requests/route.ts for why it's
+// deliberately unremarkable rather than literally named "honeypot".
+const HONEYPOT_FIELD = "website";
 
 const SERVICE_OPTIONS = [
   { value: "MATTRESS", label: "Mattress Cleaning" },
@@ -38,6 +43,8 @@ export function RequestQuoteForm() {
   const [serverError, setServerError] = useState<string | null>(null);
   const [submittedName, setSubmittedName] = useState<string | null>(null);
   const [photoIssue, setPhotoIssue] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
 
   // Revoke object URLs on unmount/replace so we don't leak memory during
   // a long session — these are local previews only; the actual files
@@ -91,6 +98,10 @@ export function RequestQuoteForm() {
       setFieldErrors({ service: "Please choose a service." });
       return;
     }
+    if (!turnstileToken) {
+      setServerError("Please complete the verification check above.");
+      return;
+    }
     setFieldErrors({});
     setStatus("submitting");
 
@@ -100,6 +111,10 @@ export function RequestQuoteForm() {
     requestBody.append("service", service);
     requestBody.append("area", area);
     requestBody.append("description", description);
+    requestBody.append("cf-turnstile-response", turnstileToken);
+    // Honeypot: real users never see or fill this (see the hidden field
+    // below); always sent empty for a genuine submission.
+    requestBody.append(HONEYPOT_FIELD, String(formData.get(HONEYPOT_FIELD) ?? ""));
     for (const photo of photos) {
       requestBody.append("photos", photo.file, photo.file.name);
     }
@@ -134,6 +149,13 @@ export function RequestQuoteForm() {
         return;
       }
 
+      // Turnstile tokens are single-use regardless of outcome — get a
+      // fresh challenge before the customer can retry.
+      if (response.status === 400) {
+        setTurnstileToken(null);
+        setTurnstileResetKey((key) => key + 1);
+      }
+
       setServerError(
         payload?.error ??
           "Something went wrong. Please try again or message us on WhatsApp.",
@@ -153,6 +175,16 @@ export function RequestQuoteForm() {
 
   return (
     <form className="mt-10 space-y-10" onSubmit={handleSubmit} noValidate>
+      {/* Honeypot — invisible to sighted users and removed from the
+          accessibility tree (aria-hidden + tabIndex=-1), so it's never
+          announced to or reachable by screen-reader/keyboard users. A
+          real visitor never fills this in; the server rejects (silently)
+          any submission where it isn't empty. */}
+      <div aria-hidden="true" style={{ position: "absolute", left: "-9999px", width: "1px", height: "1px", overflow: "hidden" }}>
+        <label htmlFor="website">Leave this field blank</label>
+        <input id="website" name={HONEYPOT_FIELD} type="text" tabIndex={-1} autoComplete="off" />
+      </div>
+
       {/* Section 1 — Your details */}
       <fieldset>
         <legend className="text-xs font-semibold tracking-[0.14em] text-[var(--guardian-deep)] uppercase">
@@ -344,6 +376,15 @@ export function RequestQuoteForm() {
         </div>
       </fieldset>
 
+      {/* Verification */}
+      <div>
+        <TurnstileWidget
+          key={turnstileResetKey}
+          siteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? ""}
+          onToken={setTurnstileToken}
+        />
+      </div>
+
       {/* Submit */}
       <div>
         {serverError && (
@@ -356,8 +397,8 @@ export function RequestQuoteForm() {
         )}
         <button
           type="submit"
-          disabled={status === "submitting"}
-          aria-disabled={status === "submitting"}
+          disabled={status === "submitting" || !turnstileToken}
+          aria-disabled={status === "submitting" || !turnstileToken}
           className="w-full rounded-[3px] bg-[var(--guardian-deep)] px-6 py-3 text-sm font-medium tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-60"
         >
           {status === "submitting" ? "Sending…" : "Send Quote Request"}

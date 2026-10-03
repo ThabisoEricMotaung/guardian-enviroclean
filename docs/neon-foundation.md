@@ -309,20 +309,83 @@ PRIVATE UPLOAD → JOB_PHOTOS INSERT → RESPONSE (full or partial success)`.
   replaced with the actual format/size limits. The form still won't
   clear until the server confirms the `jobs` row was persisted.
 
-## What still needs to happen
+## Quote Request Pipeline — Pass 3
 
-1. Review and apply `db/migrations/0001_init.sql` (see **Applying the
-   migration** above) — done; see git/deployment history for when.
-2. Add `@neondatabase/auth`, implement the Better Auth route handler and
+Adds honeypot + Cloudflare Turnstile verification + a best-effort email
+notification to Cecil. Order of operations in
+`src/app/api/quote-requests/route.ts`:
+`parse request → honeypot → Turnstile → validate text → persist job →
+process photos → notify Cecil → respond`.
+
+- **Honeypot** (`HONEYPOT_FIELD = "website"` in both `route.ts` and
+  `request-quote-form.tsx`): one extra form field, visually hidden via
+  off-screen CSS *and* `aria-hidden="true"` *and* `tabIndex={-1}` — all
+  three, not just visual hiding, so it's removed from the accessibility
+  tree and the tab order, not just invisible to sighted users. A real
+  visitor never sees, reaches, or fills it. If the server finds it
+  non-empty, the request is dropped silently: **no job, no upload, no
+  notification** — but the response is the exact same
+  `{ ok: true }` / `201` shape as a genuine empty-photo success. A
+  distinct rejection (422/403/etc.) would hand a simple bot a clean
+  signal to detect and route around the trap; a fake success gives it
+  nothing to learn from. This is one weak layer, not a real anti-abuse
+  system — Turnstile is the actual gate.
+- **Turnstile** (`src/lib/turnstile.ts`): server-side verification
+  against Cloudflare's official `POST
+  https://challenges.cloudflare.com/turnstile/v0/siteverify` (confirmed
+  against current Cloudflare docs, not assumed from memory), with a
+  5-second timeout via `AbortController` so a Cloudflare-side problem
+  can't hang the request. Every non-success case — missing token,
+  invalid, expired, replayed (`timeout-or-duplicate`), a non-2xx
+  response, a network failure, or `TURNSTILE_SECRET_KEY` itself being
+  unconfigured — collapses to the same `{ ok: false }` and the same
+  generic customer message; no reason is ever exposed to the client, and
+  neither the secret nor the full token is ever logged. The client
+  widget (`src/components/turnstile-widget.tsx`) uses Cloudflare's own
+  explicit-rendering JS API directly (`window.turnstile.render` +
+  `callback`/`expired-callback`/`error-callback`) — no third-party React
+  wrapper package. `remoteip` is sourced via `@vercel/functions`'s
+  `ipAddress()` helper (already a dependency), Vercel's own documented,
+  non-spoofable mechanism — not an arbitrary trusted `x-forwarded-for`
+  header, and it's optional in the request to Cloudflare, so a
+  non-Vercel/local environment (where it resolves to `undefined`) still
+  works.
+- **Notification** (`src/lib/notifications.ts`): the official `resend`
+  package, since no other email infrastructure existed in this repo.
+  Fires only after the `jobs` row is persisted, after photo processing
+  (so Cecil is told how many photos actually attached), wrapped in the
+  route's own `try/catch` in addition to the module's internal
+  swallow-and-log — belt and suspenders for the one guarantee that
+  matters most here: **a notification failure can never turn a
+  persisted enquiry into a failure response, and never deletes the job
+  or any already-attached photo.** One attempt, no retry/queue. Plain
+  text email; subject `New Guardian quote request — <service>`; body has
+  customer name, phone, service, area, description, an accurate
+  "X of Y photos received" (or "none attached") line, and `Source:
+  Website` — never a storage key, a photo, or any URL. Recipient
+  (`CECIL_NOTIFICATION_EMAIL`) and sender (`RESEND_FROM_EMAIL`) come only
+  from server env config; nothing the client submits can influence
+  either.
+- **Response semantics unchanged in shape, refined in meaning**: the
+  customer-facing outcome still reflects only enquiry persistence and
+  attachment persistence (from Pass 2) — notification success/failure is
+  invisible to the customer by design.
+
+### What still needs to happen
+
+1. Add `@neondatabase/auth`, implement the Better Auth route handler and
    the `ADMIN_EMAILS` check, and build the actual Job Manager
    login/protected routes.
-3. Add a presigned-URL read path (Files SDK or
+2. Add a presigned-URL read path (Files SDK or
    `@aws-sdk/s3-request-presigner`) for the future Job Manager photo
-   viewer — Pass 2 only writes objects, it never reads/presigns them.
-4. Add honeypot + Turnstile to `/api/quote-requests` (Pass 3) before any
-   real public launch.
-5. Create Cecil's one admin account once (2) is ready, then set
+   viewer — nothing reads/presigns objects yet.
+3. Create Cecil's one admin account once (1) is ready, then set
    `ADMIN_EMAILS` to his address.
-6. Decide whether HEIC/HEIF support and/or lifting the photo size caps
+4. Decide whether HEIC/HEIF support and/or lifting the photo size caps
    (via presigned direct-to-bucket uploads) are worth the added
    complexity, once real customer usage shows whether they're needed.
+5. Rate limiting / abuse throttling beyond Turnstile + honeypot — neither
+   was in scope for Pass 3 and neither exists yet.
+6. Configure real Cloudflare Turnstile and Resend credentials (site
+   verified in Resend, widget registered in Cloudflare) before any
+   public launch — see the report for this pass for the exact list.

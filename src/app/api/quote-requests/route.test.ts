@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 // storage.ts is partially mocked below via importOriginal, which means
@@ -11,6 +11,8 @@ const insertWebsiteEnquiry = vi.fn();
 const insertJobPhoto = vi.fn();
 const uploadJobPhoto = vi.fn();
 const deleteJobPhoto = vi.fn();
+const verifyTurnstileToken = vi.fn();
+const notifyCecilOfEnquiry = vi.fn();
 
 vi.mock("@/lib/quote-requests", () => ({
   insertWebsiteEnquiry: (...args: unknown[]) => insertWebsiteEnquiry(...args),
@@ -18,9 +20,9 @@ vi.mock("@/lib/quote-requests", () => ({
 }));
 
 // Partial mock: keep the real buildJobPhotoKey (pure, no I/O — exercising
-// it for real is how test 14 below proves customer filenames can't reach
-// the storage key) and only mock the two functions that actually talk to
-// S3.
+// it for real is how the "customer filenames" test below proves customer
+// filenames can't reach the storage key) and only mock the two functions
+// that actually talk to S3.
 vi.mock("@/lib/storage", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/storage")>();
   return {
@@ -29,6 +31,14 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     deleteJobPhoto: (...args: unknown[]) => deleteJobPhoto(...args),
   };
 });
+
+vi.mock("@/lib/turnstile", () => ({
+  verifyTurnstileToken: (...args: unknown[]) => verifyTurnstileToken(...args),
+}));
+
+vi.mock("@/lib/notifications", () => ({
+  notifyCecilOfEnquiry: (...args: unknown[]) => notifyCecilOfEnquiry(...args),
+}));
 
 // vi.mock above is hoisted ahead of this import by vitest's transform.
 import { POST } from "./route";
@@ -41,6 +51,7 @@ const validFields = {
   service: "MATTRESS",
   area: "Menlyn, Pretoria",
   description: "Queen mattress, some staining on one side.",
+  "cf-turnstile-response": "valid-test-token",
 };
 
 const JPEG_SIG = [0xff, 0xd8, 0xff];
@@ -61,15 +72,92 @@ function multipartRequest(fields: Record<string, string>, files: File[] = []): N
   });
 }
 
-describe("POST /api/quote-requests", () => {
-  afterEach(() => {
-    insertWebsiteEnquiry.mockReset();
-    insertJobPhoto.mockReset();
-    uploadJobPhoto.mockReset();
-    deleteJobPhoto.mockReset();
+beforeEach(() => {
+  // Default: verification and notification both "succeed", so existing
+  // scenarios don't need to know about Pass 3 unless they're testing it.
+  verifyTurnstileToken.mockResolvedValue({ ok: true });
+  notifyCecilOfEnquiry.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  insertWebsiteEnquiry.mockReset();
+  insertJobPhoto.mockReset();
+  uploadJobPhoto.mockReset();
+  deleteJobPhoto.mockReset();
+  verifyTurnstileToken.mockReset();
+  notifyCecilOfEnquiry.mockReset();
+});
+
+describe("POST /api/quote-requests — honeypot", () => {
+  it("allows normal flow when the honeypot field is empty", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(multipartRequest({ ...validFields, website: "" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(json).toEqual({ ok: true });
+    expect(insertWebsiteEnquiry).toHaveBeenCalledTimes(1);
   });
 
-  // 1. valid enquiry without photos
+  it("creates no job, uploads no photos, and sends no notification when the honeypot is populated", async () => {
+    const response = await POST(
+      multipartRequest({ ...validFields, website: "http://spam.example" }, [jpegFile("a.jpg")]),
+    );
+    const json = await response.json();
+
+    // Same shape as a genuine no-photo success — see route.ts for why.
+    expect(response.status).toBe(201);
+    expect(json).toEqual({ ok: true });
+    expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+    expect(uploadJobPhoto).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+    // Honeypot short-circuits before Turnstile is even checked.
+    expect(verifyTurnstileToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/quote-requests — Turnstile", () => {
+  it("rejects when verification fails (covers missing/invalid/expired/replayed/provider-error tokens, which all collapse to the same result — see turnstile.test.ts for those cases individually)", async () => {
+    verifyTurnstileToken.mockResolvedValueOnce({ ok: false });
+
+    const response = await POST(multipartRequest(validFields, [jpegFile("a.jpg")]));
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json.ok).toBe(false);
+    expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+    expect(uploadJobPhoto).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("permits the normal flow once verification passes", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(multipartRequest(validFields));
+    const json = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(json).toEqual({ ok: true });
+    expect(verifyTurnstileToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("never includes the secret or a token value in the failure response", async () => {
+    verifyTurnstileToken.mockResolvedValueOnce({ ok: false });
+
+    const response = await POST(
+      multipartRequest({ ...validFields, "cf-turnstile-response": "some-token-value-xyz" }),
+    );
+    const json = await response.json();
+    const raw = JSON.stringify(json);
+
+    expect(raw).not.toContain("some-token-value-xyz");
+    expect(raw).not.toMatch(/TURNSTILE_SECRET_KEY|secret/i);
+  });
+});
+
+describe("POST /api/quote-requests — core pipeline", () => {
+  // valid no-photo request persists
   it("accepts a valid enquiry with no photos", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
 
@@ -81,7 +169,6 @@ describe("POST /api/quote-requests", () => {
     expect(uploadJobPhoto).not.toHaveBeenCalled();
   });
 
-  // 2. valid enquiry with one valid photo
   it("accepts a valid enquiry with one valid photo", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto.mockResolvedValueOnce(undefined);
@@ -96,7 +183,6 @@ describe("POST /api/quote-requests", () => {
     expect(insertJobPhoto).toHaveBeenCalledWith(JOB_ID, expect.any(String));
   });
 
-  // 3. valid enquiry with four valid photos
   it("accepts a valid enquiry with four valid photos", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto.mockResolvedValue(undefined);
@@ -111,7 +197,6 @@ describe("POST /api/quote-requests", () => {
     expect(uploadJobPhoto).toHaveBeenCalledTimes(4);
   });
 
-  // 4. more than four files rejected appropriately — job still persists
   it("persists the enquiry but attaches nothing when more than four files are submitted", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
 
@@ -125,7 +210,6 @@ describe("POST /api/quote-requests", () => {
     expect(uploadJobPhoto).not.toHaveBeenCalled();
   });
 
-  // 5. unsupported file type — job still persists
   it("persists the enquiry but rejects an unsupported file type", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
 
@@ -140,7 +224,6 @@ describe("POST /api/quote-requests", () => {
     expect(uploadJobPhoto).not.toHaveBeenCalled();
   });
 
-  // 6. zero-byte file — job still persists
   it("persists the enquiry but rejects a zero-byte file", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
 
@@ -153,7 +236,6 @@ describe("POST /api/quote-requests", () => {
     expect(uploadJobPhoto).not.toHaveBeenCalled();
   });
 
-  // 7. oversized individual file — job still persists
   it("persists the enquiry but rejects an oversized file", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
 
@@ -166,8 +248,7 @@ describe("POST /api/quote-requests", () => {
     expect(uploadJobPhoto).not.toHaveBeenCalled();
   });
 
-  // 8. malformed text fields still rejected — nothing persisted, nothing uploaded
-  it("rejects malformed text fields without persisting or uploading anything", async () => {
+  it("rejects malformed text fields without persisting, uploading, or notifying", async () => {
     const response = await POST(
       multipartRequest({ ...validFields, name: "" }, [jpegFile("a.jpg")]),
     );
@@ -178,9 +259,9 @@ describe("POST /api/quote-requests", () => {
     expect(json.fieldErrors.name).toBeTruthy();
     expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
     expect(uploadJobPhoto).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
   });
 
-  // 9. jobs insert failure → no upload attempted
   it("attempts no upload when the jobs insert fails", async () => {
     insertWebsiteEnquiry.mockRejectedValueOnce(new Error("simulated db failure"));
 
@@ -190,9 +271,9 @@ describe("POST /api/quote-requests", () => {
     expect(response.status).toBe(500);
     expect(json.ok).toBe(false);
     expect(uploadJobPhoto).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
   });
 
-  // 10. upload failure after job persistence → job considered received
   it("still reports the enquiry as received when the only photo's upload fails", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto.mockRejectedValueOnce(new Error("simulated storage failure"));
@@ -206,7 +287,6 @@ describe("POST /api/quote-requests", () => {
     expect(insertJobPhoto).not.toHaveBeenCalled();
   });
 
-  // 11. one of multiple uploads fails → partial attachment result
   it("reports a partial attachment result when one of several uploads fails", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto
@@ -222,7 +302,6 @@ describe("POST /api/quote-requests", () => {
     expect(json).toEqual({ ok: true, photos: { requested: 2, accepted: 1 } });
   });
 
-  // 12. upload succeeds but job_photos insert fails → cleanup attempted
   it("attempts to delete the uploaded object when the job_photos insert fails", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto.mockResolvedValueOnce(undefined);
@@ -238,7 +317,6 @@ describe("POST /api/quote-requests", () => {
     expect(deleteJobPhoto).toHaveBeenCalledWith(expect.any(String));
   });
 
-  // 13. storage/internal error details never returned to client
   it("never leaks raw storage/database error detail to the client", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto.mockRejectedValueOnce(
@@ -255,16 +333,13 @@ describe("POST /api/quote-requests", () => {
     expect(raw).not.toMatch(/AccessDenied|AKIA|S3 error/i);
   });
 
-  // 14. customer filenames cannot control storage object paths
   it("never uses the customer-supplied filename as (or within) the storage key", async () => {
     insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
     uploadJobPhoto.mockResolvedValueOnce(undefined);
     insertJobPhoto.mockResolvedValueOnce(undefined);
 
     const maliciousName = "../../../etc/passwd.jpg";
-    const response = await POST(
-      multipartRequest(validFields, [jpegFile(maliciousName)]),
-    );
+    const response = await POST(multipartRequest(validFields, [jpegFile(maliciousName)]));
     await response.json();
 
     expect(uploadJobPhoto).toHaveBeenCalledTimes(1);
@@ -274,8 +349,7 @@ describe("POST /api/quote-requests", () => {
     expect(key).toMatch(new RegExp(`^quote-requests/${JOB_ID}/[0-9a-f-]+\\.jpg$`));
   });
 
-  // Preserved from Pass 1: malformed body, invalid service.
-  it("rejects a malformed (non-multipart) request without persisting or uploading anything", async () => {
+  it("rejects a malformed (non-multipart) request without persisting, uploading, or notifying", async () => {
     const response = await POST(
       new NextRequest("http://localhost/api/quote-requests", {
         method: "POST",
@@ -288,9 +362,10 @@ describe("POST /api/quote-requests", () => {
     expect(response.status).toBe(400);
     expect(json.ok).toBe(false);
     expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid service value, without persisting or uploading anything", async () => {
+  it("rejects an invalid service value, without persisting, uploading, or notifying", async () => {
     const response = await POST(
       multipartRequest({ ...validFields, service: "POOL_CLEANING" }),
     );
@@ -299,5 +374,154 @@ describe("POST /api/quote-requests", () => {
     expect(response.status).toBe(422);
     expect(json.fieldErrors.service).toBeTruthy();
     expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/quote-requests — Cecil notification", () => {
+  it("triggers exactly one notification attempt for a successfully persisted enquiry", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(multipartRequest(validFields));
+
+    expect(notifyCecilOfEnquiry).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no notification for a rejected (validation-failed) request", async () => {
+    await POST(multipartRequest({ ...validFields, service: "POOL_CLEANING" }));
+
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("sends no notification when the jobs insert fails", async () => {
+    insertWebsiteEnquiry.mockRejectedValueOnce(new Error("simulated db failure"));
+
+    await POST(multipartRequest(validFields));
+
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("still returns enquiry success when notification fails", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    notifyCecilOfEnquiry.mockRejectedValueOnce(new Error("simulated Resend failure"));
+
+    const response = await POST(multipartRequest(validFields));
+    const json = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(json).toEqual({ ok: true });
+  });
+
+  it("does not roll back or otherwise affect the persisted job when notification fails", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    notifyCecilOfEnquiry.mockRejectedValueOnce(new Error("simulated Resend failure"));
+
+    const response = await POST(multipartRequest(validFields));
+
+    expect(response.status).toBe(201);
+    expect(insertWebsiteEnquiry).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not delete an already-successfully-attached photo when notification fails", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    uploadJobPhoto.mockResolvedValueOnce(undefined);
+    insertJobPhoto.mockResolvedValueOnce(undefined);
+    notifyCecilOfEnquiry.mockRejectedValueOnce(new Error("simulated Resend failure"));
+
+    const response = await POST(multipartRequest(validFields, [jpegFile("a.jpg")]));
+    const json = await response.json();
+
+    expect(json).toEqual({ ok: true, photos: { requested: 1, accepted: 1 } });
+    expect(deleteJobPhoto).not.toHaveBeenCalled();
+  });
+
+  it("passes the expected customer/job fields to the notification", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(multipartRequest(validFields));
+
+    expect(notifyCecilOfEnquiry).toHaveBeenCalledWith({
+      customerName: "Jane Doe",
+      phone: "0821234567",
+      service: "MATTRESS",
+      area: "Menlyn, Pretoria",
+      description: "Queen mattress, some staining on one side.",
+      photosRequested: 0,
+      photosAccepted: 0,
+    });
+  });
+
+  it("never passes a storage key/path or credential-shaped field to the notification", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    uploadJobPhoto.mockResolvedValueOnce(undefined);
+    insertJobPhoto.mockResolvedValueOnce(undefined);
+
+    await POST(multipartRequest(validFields, [jpegFile("a.jpg")]));
+
+    const call = notifyCecilOfEnquiry.mock.calls[0][0];
+    expect(Object.keys(call).sort()).toEqual(
+      [
+        "area",
+        "customerName",
+        "description",
+        "phone",
+        "photosAccepted",
+        "photosRequested",
+        "service",
+      ].sort(),
+    );
+  });
+
+  it("accurately reflects photo counts when one of several uploads fails", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    uploadJobPhoto
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("simulated storage failure"));
+    insertJobPhoto.mockResolvedValueOnce(undefined);
+
+    await POST(multipartRequest(validFields, [jpegFile("a.jpg"), jpegFile("b.jpg")]));
+
+    expect(notifyCecilOfEnquiry).toHaveBeenCalledWith(
+      expect.objectContaining({ photosRequested: 2, photosAccepted: 1 }),
+    );
+  });
+});
+
+describe("POST /api/quote-requests — security", () => {
+  it("ignores an arbitrary client-supplied recipient field", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(
+      multipartRequest({
+        ...validFields,
+        to: "attacker@evil.example",
+        cecilEmail: "attacker@evil.example",
+      }),
+    );
+
+    const call = notifyCecilOfEnquiry.mock.calls[0][0];
+    expect(JSON.stringify(call)).not.toContain("attacker@evil.example");
+  });
+
+  it("ignores an arbitrary client-supplied sender field", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(multipartRequest({ ...validFields, from: "attacker@evil.example" }));
+
+    const call = notifyCecilOfEnquiry.mock.calls[0][0];
+    expect(JSON.stringify(call)).not.toContain("attacker@evil.example");
+  });
+
+  it("never returns a raw notification-provider error to the client", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    notifyCecilOfEnquiry.mockRejectedValueOnce(
+      new Error("Resend API error: invalid RESEND_API_KEY re_secretvalue123"),
+    );
+
+    const response = await POST(multipartRequest(validFields));
+    const json = await response.json();
+    const raw = JSON.stringify(json);
+
+    expect(raw).not.toMatch(/RESEND_API_KEY|re_secretvalue123/);
   });
 });
