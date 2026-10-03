@@ -3,19 +3,20 @@ import { CtaButton } from "@/components/cta-button";
 import { HeroSlideshow } from "@/components/hero-slideshow";
 import { ScrollReveal } from "@/components/scroll-reveal";
 import { BeforeAfterSlider } from "@/components/before-after-slider";
+import { withBasePath } from "@/lib/base-path";
 import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
 
 const HERO_SLIDES = [
   {
-    src: "/images/work/hero-rug-cleaning.jpg",
+    src: withBasePath("/images/work/hero-rug-cleaning.jpg"),
     alt: "An area rug freshly cleaned on Guardian's workshop floor, with extraction equipment behind it.",
   },
   {
-    src: "/images/work/pool-cover-cleaning.jpg",
+    src: withBasePath("/images/work/pool-cover-cleaning.jpg"),
     alt: "A rotary cleaning machine scrubbing a large soapy pool cover on site.",
   },
   {
-    src: "/images/work/mattress-before-after.jpg",
+    src: withBasePath("/images/work/mattress-before-after.jpg"),
     alt: "A mattress split down the middle, one half still stained and one half cleaned bright white.",
   },
 ];
@@ -36,25 +37,25 @@ function CarIcon({ className = "h-6 w-6" }: { className?: string }) {
 }
 
 const SERVICES = [
-  { name: "Mattress Cleaning", image: "/images/work/mattress-before-after.jpg" },
-  { name: "Sofa & Couch Cleaning", image: "/images/work/upholstery-after.jpg" },
-  { name: "Carpet & Rug Cleaning", image: "/images/work/rug-detail.jpg" },
+  { name: "Mattress Cleaning", image: withBasePath("/images/work/mattress-before-after.jpg") },
+  { name: "Sofa & Couch Cleaning", image: withBasePath("/images/work/upholstery-after.jpg") },
+  { name: "Carpet & Rug Cleaning", image: withBasePath("/images/work/rug-detail.jpg") },
   { name: "Car Interior Cleaning", image: null },
 ];
 
 const SUPPORTING_WORK = [
   {
-    src: "/images/work/dining-chairs-clean.jpg",
+    src: withBasePath("/images/work/dining-chairs-clean.jpg"),
     alt: "A row of upholstered dining chairs drying outdoors after cleaning.",
     caption: "Dining chairs, cleaned",
   },
   {
-    src: "/images/work/pool-loungers-clean.jpg",
+    src: withBasePath("/images/work/pool-loungers-clean.jpg"),
     alt: "Two black-and-white striped pool lounger cushions, cleaned and set upright on a patio.",
     caption: "Outdoor cushions, cleaned",
   },
   {
-    src: "/images/work/pool-cover-result.jpg",
+    src: withBasePath("/images/work/pool-cover-result.jpg"),
     alt: "A large pool cover, cleaned and laid out beside the pool.",
     caption: "A pool cover, cleaned",
   },
@@ -184,8 +185,8 @@ export default function HomePage() {
 
           <div className="mt-8 max-w-2xl">
             <BeforeAfterSlider
-              beforeSrc="/images/work/upholstery-before.jpg"
-              afterSrc="/images/work/upholstery-after.jpg"
+              beforeSrc={withBasePath("/images/work/upholstery-before.jpg")}
+              afterSrc={withBasePath("/images/work/upholstery-after.jpg")}
               beforeAlt="Heavily soiled armchair cushion before cleaning, with cleaning products beside it."
               afterAlt="The same armchair after cleaning, upholstery visibly restored, cushion removed for drying."
             />

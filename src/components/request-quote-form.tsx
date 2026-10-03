@@ -107,7 +107,8 @@ export function RequestQuoteForm() {
     try {
       // No Content-Type header — the browser sets the multipart
       // boundary itself. Setting it manually here would break parsing.
-      const response = await fetch("/api/quote-requests", {
+      // basePath is not applied to fetch(); prefix it for sub-path deployments.
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/quote-requests`, {
         method: "POST",
         body: requestBody,
       });

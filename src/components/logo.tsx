@@ -1,9 +1,10 @@
 import Image from "next/image";
+import { withBasePath } from "@/lib/base-path";
 
 // Guardian's real logo, cropped (not redrawn/recolored) from the supplied
 // artwork. Source: guardian-enviroclean-logo.jpeg, sampled/cropped via
 // scripts/asset-prep during the real-asset-integration milestone.
-const MARK_SRC = "/images/brand/guardian-logo-mark.png";
+const MARK_SRC = withBasePath("/images/brand/guardian-logo-mark.png");
 const MARK_ASPECT = 300 / 345; // width / height of the cropped mark
 
 export function Logo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
