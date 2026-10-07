@@ -4,7 +4,7 @@ import { HeroSlideshow } from "@/components/hero-slideshow";
 import { ScrollReveal } from "@/components/scroll-reveal";
 import { BeforeAfterSlider } from "@/components/before-after-slider";
 import { withBasePath } from "@/lib/base-path";
-import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
+import { FACEBOOK_NAME, FACEBOOK_URL, PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
 
 const HERO_SLIDES = [
   {
@@ -212,6 +212,33 @@ export default function HomePage() {
                 </figcaption>
               </figure>
             ))}
+          </div>
+
+          {/* Follow-on from Our Work — deliberately a text link, not a
+              button, so it never competes with Request a Quote / WhatsApp. */}
+          <div className="mt-12 flex flex-col gap-4 border-t border-[var(--line)] pt-8 sm:flex-row sm:items-end sm:justify-between sm:gap-8">
+            <div className="max-w-md">
+              <h3 className="font-semibold text-[var(--foreground)]">
+                See more of our work
+              </h3>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Follow Guardian Enviroclean on Facebook for recent cleaning
+                jobs, before-and-after results and updates. Our Facebook page
+                is {FACEBOOK_NAME}.
+              </p>
+            </div>
+            <a
+              href={FACEBOOK_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group inline-flex shrink-0 items-center gap-1.5 self-start rounded-[2px] py-1 text-sm font-medium text-[var(--guardian-deep)] transition-colors hover:text-[var(--guardian-deep-dark)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--guardian-deep)] sm:self-auto"
+            >
+              <span className="underline decoration-[var(--guardian-light)] underline-offset-4 group-hover:decoration-[var(--guardian-deep-dark)]">
+                Follow on Facebook
+              </span>
+              <span aria-hidden="true">→</span>
+              <span className="sr-only">(opens in a new tab)</span>
+            </a>
           </div>
         </div>
       </section>
