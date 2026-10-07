@@ -18,14 +18,29 @@ Work that must land before handover, in order. Infrastructure follow-ups
 already tracked in `docs/neon-foundation.md` ("What still needs to
 happen") are not repeated here.
 
-### 1. Facebook acquisition support — implemented locally, not deployed
+### 1. Facebook acquisition support — deployed and verified in production
 
-Code, tests and `db/migrations/0002_acquisition.sql` are in place.
-**Release order matters:** apply `0002` to production (branch-test first,
-as for `0001` in `docs/neon-foundation.md`) **before** deploying this
-code. The website insert writes the two new columns, so deploying first
-would make every website enquiry fail. Cecil's setup is in "Facebook
-setup" below.
+`db/migrations/0002_acquisition.sql` is applied and verified in
+production, and Facebook acquisition attribution is deployed at
+<https://guardianenviroclean.co.za>. Cecil's setup is in "Facebook setup"
+below.
+
+**Production test status:** a controlled production test passed end to
+end through the Facebook · Post link (`utm_content=post`). The database
+recorded `source = WEBSITE`, `acquisition_channel = FACEBOOK`,
+`acquisition_detail = post`. Cecil's notification email showed
+`Source: Website` and `Acquisition: Facebook · Post`. The test's one
+private photo upload was correctly linked to the job. The test job,
+its `job_photos` row and its storage object were then removed, and
+cleanup was verified (0 `jobs`, 0 `job_photos`, 0 objects under
+`quote-requests/`).
+
+**Production domain and Turnstile.** The Cloudflare Turnstile widget's
+hostname allowlist currently includes `guardian-enviroclean.vercel.app`,
+`guardianenviroclean.co.za` and `www.guardianenviroclean.co.za`. Whenever
+a production hostname is added or changed, update that allowlist as part
+of the domain release checklist. Otherwise Turnstile fails on the new
+hostname and quote requests from it are rejected.
 
 **Pass 3 status:** the production notification test succeeded and the
 email was received. Cleanup of that test's `jobs` row, `job_photos` rows
