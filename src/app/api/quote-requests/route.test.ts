@@ -448,6 +448,7 @@ describe("POST /api/quote-requests — Cecil notification", () => {
       description: "Queen mattress, some staining on one side.",
       photosRequested: 0,
       photosAccepted: 0,
+      acquisition: { channel: null, detail: null },
     });
   });
 
@@ -461,6 +462,7 @@ describe("POST /api/quote-requests — Cecil notification", () => {
     const call = notifyCecilOfEnquiry.mock.calls[0][0];
     expect(Object.keys(call).sort()).toEqual(
       [
+        "acquisition",
         "area",
         "customerName",
         "description",
@@ -523,5 +525,117 @@ describe("POST /api/quote-requests — security", () => {
     const raw = JSON.stringify(json);
 
     expect(raw).not.toMatch(/RESEND_API_KEY|re_secretvalue123/);
+  });
+});
+
+describe("POST /api/quote-requests — acquisition attribution", () => {
+  const facebook = { acquisition_channel: "FACEBOOK" };
+
+  it.each(["page_button", "post", "bio"])("persists FACEBOOK + %s", async (placement) => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(
+      multipartRequest({ ...validFields, ...facebook, acquisition_detail: placement }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(insertWebsiteEnquiry).toHaveBeenCalledWith(expect.any(Object), {
+      channel: "FACEBOOK",
+      detail: placement,
+    });
+  });
+
+  it("persists NULL attribution for an ordinary unattributed enquiry, otherwise unchanged", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(multipartRequest(validFields));
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(insertWebsiteEnquiry).toHaveBeenCalledWith(
+      {
+        customerName: "Jane Doe",
+        phone: "0821234567",
+        service: "MATTRESS",
+        area: "Menlyn, Pretoria",
+        description: "Queen mattress, some staining on one side.",
+      },
+      { channel: null, detail: null },
+    );
+  });
+
+  it.each([
+    ["OTHER", "post"],
+    ["DIRECT", ""],
+    ["GOOGLE", "bio"],
+    ["facebook", "post"],
+    ["FACEBOOK; drop table jobs", "post"],
+  ])("rejects a manipulated channel %j (with detail %j) as NULL", async (channel, detail) => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(
+      multipartRequest({ ...validFields, acquisition_channel: channel, acquisition_detail: detail }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(insertWebsiteEnquiry).toHaveBeenCalledWith(expect.any(Object), {
+      channel: null,
+      detail: null,
+    });
+  });
+
+  it("drops a manipulated placement but keeps FACEBOOK", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(multipartRequest({ ...validFields, ...facebook, acquisition_detail: "paid_ad" }));
+
+    expect(insertWebsiteEnquiry).toHaveBeenCalledWith(expect.any(Object), {
+      channel: "FACEBOOK",
+      detail: null,
+    });
+  });
+
+  it("never persists raw UTM fields or fbclid submitted alongside the form", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(
+      multipartRequest({
+        ...validFields,
+        ...facebook,
+        acquisition_detail: "post",
+        utm_source: "facebook",
+        utm_campaign: "spring-sale",
+        utm_term: "mattress",
+        fbclid: "IwAR0rawclickid",
+      }),
+    );
+
+    const persisted = JSON.stringify(insertWebsiteEnquiry.mock.calls[0]);
+    expect(persisted).not.toMatch(/spring-sale|IwAR0rawclickid|utm_|fbclid/);
+    expect(insertWebsiteEnquiry.mock.calls[0][1]).toEqual({ channel: "FACEBOOK", detail: "post" });
+  });
+
+  it("passes the server-normalised attribution to Cecil's notification", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(multipartRequest({ ...validFields, ...facebook, acquisition_detail: "bio" }));
+
+    expect(notifyCecilOfEnquiry.mock.calls[0][0].acquisition).toEqual({
+      channel: "FACEBOOK",
+      detail: "bio",
+    });
+  });
+
+  it("passes NULL attribution to the notification for a manipulated channel", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(
+      multipartRequest({ ...validFields, acquisition_channel: "OTHER", acquisition_detail: "post" }),
+    );
+
+    expect(notifyCecilOfEnquiry.mock.calls[0][0].acquisition).toEqual({
+      channel: null,
+      detail: null,
+    });
   });
 });

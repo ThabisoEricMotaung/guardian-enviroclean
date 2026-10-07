@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Logo } from "@/components/logo";
-import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
+import { FACEBOOK_NAME, FACEBOOK_URL, PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
 
 export function SiteFooter() {
   const year = new Date().getFullYear();
@@ -38,6 +38,16 @@ export function SiteFooter() {
                 className="font-medium text-[var(--guardian-deep)] hover:underline"
               >
                 WhatsApp {PHONE_INTL_DISPLAY}
+              </a>
+            </p>
+            <p className="mt-1">
+              <a
+                href={FACEBOOK_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-[var(--foreground)] hover:underline"
+              >
+                Facebook · {FACEBOOK_NAME}
               </a>
             </p>
           </div>

@@ -2,6 +2,7 @@ import "server-only";
 
 import { db } from "./db";
 import type { QuoteRequestData } from "./validation/quote-request";
+import type { WebsiteAcquisition } from "./acquisition";
 
 // The only write path for a public quote request in Pass 1: one `jobs`
 // row, status/source fixed to what a website enquiry always is. No
@@ -11,12 +12,15 @@ import type { QuoteRequestData } from "./validation/quote-request";
 // quoted_amount / scheduled_at / amount_paid / job_costs / source_note /
 // notes are intentionally omitted so they stay NULL. id / created_at /
 // updated_at are intentionally omitted so the database defaults apply.
+// acquisition must already be server-normalised (see src/lib/acquisition.ts);
+// for an ordinary unattributed enquiry both columns stay NULL.
 export async function insertWebsiteEnquiry(
   input: QuoteRequestData,
+  acquisition: WebsiteAcquisition,
 ): Promise<{ id: string }> {
   const result = await db.query<{ id: string }>(
-    `insert into jobs (customer_name, phone, service, area, description, status, source)
-     values ($1, $2, $3, $4, $5, $6, $7)
+    `insert into jobs (customer_name, phone, service, area, description, status, source, acquisition_channel, acquisition_detail)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      returning id`,
     [
       input.customerName,
@@ -26,6 +30,8 @@ export async function insertWebsiteEnquiry(
       input.description,
       "NEW_ENQUIRY",
       "WEBSITE",
+      acquisition.channel,
+      acquisition.detail,
     ],
   );
 

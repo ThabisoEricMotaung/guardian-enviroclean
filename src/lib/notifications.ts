@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Resend } from "resend";
+import type { FacebookPlacement, WebsiteAcquisition } from "./acquisition";
 
 // Best-effort email notification to Cecil after an enquiry is already
 // safely persisted. Every failure path here is logged and swallowed —
@@ -15,7 +16,21 @@ export type EnquiryNotification = {
   description: string;
   photosRequested: number;
   photosAccepted: number;
+  // Server-normalised (see src/lib/acquisition.ts) — never raw request input.
+  acquisition: WebsiteAcquisition;
 };
+
+const PLACEMENT_LABELS: Record<FacebookPlacement, string> = {
+  page_button: "Page button",
+  post: "Post",
+  bio: "Bio",
+};
+
+// Omitted entirely when unknown — never "NULL"/"Unknown"/"Direct".
+function acquisitionLine({ channel, detail }: WebsiteAcquisition): string | null {
+  if (channel !== "FACEBOOK") return null;
+  return detail ? `Acquisition: Facebook · ${PLACEMENT_LABELS[detail]}` : "Acquisition: Facebook";
+}
 
 function buildEmail(input: EnquiryNotification): { subject: string; text: string } {
   const photosLine =
@@ -24,6 +39,7 @@ function buildEmail(input: EnquiryNotification): { subject: string; text: string
       : `Photos: ${input.photosAccepted} of ${input.photosRequested} received successfully.`;
 
   const subject = `New Guardian quote request — ${input.service}`;
+  const acquisition = acquisitionLine(input.acquisition);
 
   const text = [
     `New quote request from ${input.customerName}`,
@@ -36,7 +52,10 @@ function buildEmail(input: EnquiryNotification): { subject: string; text: string
     input.description,
     "",
     photosLine,
+    // Source (how the enquiry arrived) and acquisition (where the
+    // customer found Guardian) are different things — both are shown.
     "Source: Website",
+    ...(acquisition ? [acquisition] : []),
   ].join("\n");
 
   return { subject, text };

@@ -6,6 +6,7 @@ import { validatePhotoBatch } from "@/lib/validation/photo";
 import { buildJobPhotoKey, deleteJobPhoto, uploadJobPhoto } from "@/lib/storage";
 import { verifyTurnstileToken } from "@/lib/turnstile";
 import { notifyCecilOfEnquiry } from "@/lib/notifications";
+import { normaliseSubmittedAcquisition } from "@/lib/acquisition";
 
 // Public endpoint — prospective customers must reach this without an
 // account. See docs/neon-foundation.md, "Quote Request Pipeline — Pass 3"
@@ -78,9 +79,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Client-supplied attribution is untrusted: anything outside the
+  // allowlists (including OTHER, raw UTM strings or an fbclid) becomes NULL.
+  const acquisition = normaliseSubmittedAcquisition(
+    formData.get("acquisition_channel"),
+    formData.get("acquisition_detail"),
+  );
+
   let jobId: string;
   try {
-    const inserted = await insertWebsiteEnquiry(result.data);
+    const inserted = await insertWebsiteEnquiry(result.data, acquisition);
     jobId = inserted.id;
   } catch (error) {
     // Server-side diagnostic detail only — never forwarded to the client.
@@ -143,6 +151,7 @@ export async function POST(request: NextRequest) {
       description: result.data.description,
       photosRequested: requestedCount,
       photosAccepted: acceptedCount,
+      acquisition,
     });
   } catch (error) {
     console.error("[quote-requests] Cecil notification threw unexpectedly:", error);

@@ -20,7 +20,8 @@ const baseInput = {
   description: "Queen mattress, some staining.",
   photosRequested: 0,
   photosAccepted: 0,
-};
+  acquisition: { channel: null, detail: null },
+} as const;
 
 describe("notifyCecilOfEnquiry", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
@@ -113,6 +114,45 @@ describe("notifyCecilOfEnquiry", () => {
     expect(content).not.toMatch(/quote-requests\//);
     expect(content).not.toMatch(/https?:\/\//);
     expect(content).not.toMatch(/AWS_|AKIA/);
+  });
+
+  it.each([
+    ["page_button", "Acquisition: Facebook · Page button"],
+    ["post", "Acquisition: Facebook · Post"],
+    ["bio", "Acquisition: Facebook · Bio"],
+  ] as const)("adds a readable acquisition line for Facebook %s", async (detail, line) => {
+    configureEnv();
+    sendMock.mockResolvedValueOnce({ data: { id: "abc" }, error: null });
+
+    await notifyCecilOfEnquiry({ ...baseInput, acquisition: { channel: "FACEBOOK", detail } });
+
+    const { text } = sendMock.mock.calls[0][0];
+    expect(text).toContain(`Source: Website\n${line}`);
+    expect(text).not.toContain(detail);
+  });
+
+  it("shows Facebook without a placement when the tagged link had none", async () => {
+    configureEnv();
+    sendMock.mockResolvedValueOnce({ data: { id: "abc" }, error: null });
+
+    await notifyCecilOfEnquiry({
+      ...baseInput,
+      acquisition: { channel: "FACEBOOK", detail: null },
+    });
+
+    const { text } = sendMock.mock.calls[0][0];
+    expect(text).toMatch(/Source: Website\nAcquisition: Facebook$/);
+  });
+
+  it("omits the acquisition line entirely for an unattributed enquiry", async () => {
+    configureEnv();
+    sendMock.mockResolvedValueOnce({ data: { id: "abc" }, error: null });
+
+    await notifyCecilOfEnquiry(baseInput);
+
+    const { text } = sendMock.mock.calls[0][0];
+    expect(text).toMatch(/Source: Website$/);
+    expect(text).not.toMatch(/Acquisition|NULL|Unknown|Direct|utm_|fbclid/i);
   });
 
   it("swallows a Resend-reported error without throwing", async () => {

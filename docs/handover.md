@@ -18,12 +18,20 @@ Work that must land before handover, in order. Infrastructure follow-ups
 already tracked in `docs/neon-foundation.md` ("What still needs to
 happen") are not repeated here.
 
-### 1. Facebook acquisition support — approved, not started
+### 1. Facebook acquisition support — implemented locally, not deployed
 
-**Blocked until** the Pass 3 Resend notification test has succeeded in
-production **and** its test `jobs` row and storage object have been
-safely cleaned up. Once Pass 3 is closed: re-inspect the tree and agree
-an implementation sequence before any production schema change.
+Code, tests and `db/migrations/0002_acquisition.sql` are in place.
+**Release order matters:** apply `0002` to production (branch-test first,
+as for `0001` in `docs/neon-foundation.md`) **before** deploying this
+code. The website insert writes the two new columns, so deploying first
+would make every website enquiry fail. Cecil's setup is in "Facebook
+setup" below.
+
+**Pass 3 status:** the production notification test succeeded and the
+email was received. Cleanup of that test's `jobs` row, `job_photos` rows
+and storage objects is **verified complete**: a read-only production
+check found none remaining (0 `jobs`, 0 `job_photos`, 0 objects under
+`quote-requests/`).
 
 **Scope — only these four things:**
 
@@ -66,8 +74,9 @@ separate from _where the customer found Guardian_.
 **Capture (approved):**
 
 - Tagged URLs point at `/request-quote` with `utm_source=facebook` and
-  `utm_content=<placement>`. A landing with `fbclid` but no tag counts as
-  `FACEBOOK` with no placement.
+  `utm_content=<placement>`. Only `utm_source=facebook` establishes
+  `FACEBOOK`. `fbclid` on its own never does, because Instagram and
+  Messenger add it too (decided after the original approval).
 - On landing on any page, the client normalises this to just the
   channel and placement and keeps them in `sessionStorage` (current tab
   only), so a visitor can browse the homepage and reach Request a Quote
@@ -91,7 +100,82 @@ checklist, and what is deliberately unsupported or deferred.
 
 ## Cecil's operational setup
 
-_TBD — the Facebook checklist lands here with work item 1._
+### Facebook setup
+
+**Guardian Enviroclean and Clearview Deepcleaning.** Cecil's existing
+Facebook presence is called **Clearview Deepcleaning**. It is part of the
+Guardian Enviroclean business and keeps its name and its followers.
+Guardian Enviroclean stays the website brand. The website footer links to
+the Facebook page as "Facebook · Clearview Deepcleaning".
+
+**Cecil's Facebook link** (used by the website footer):
+<https://www.facebook.com/share/1AmHkQWHBZ/?mibextid=wwXIfr>
+
+**Links Cecil puts on Facebook.** These use the live Guardian website
+address, <https://guardianenviroclean.co.za>.
+
+| Where on Facebook | Link to use |
+| --- | --- |
+| Page action button ("Get quote" / "Learn more" / "Book now") | `https://guardianenviroclean.co.za/request-quote?utm_source=facebook&utm_medium=social&utm_content=page_button` |
+| Posts (before/after photos, offers, "get a quote" posts) | `https://guardianenviroclean.co.za/request-quote?utm_source=facebook&utm_medium=social&utm_content=post` |
+| Intro / bio / About "Website" field | `https://guardianenviroclean.co.za/request-quote?utm_source=facebook&utm_medium=social&utm_content=bio` |
+| Anywhere a "WhatsApp us" link fits (posts, About, pinned post) | https://wa.me/27659656991?text=Hi%20Guardian%20Enviroclean%2C%20I%20found%20you%20on%20Facebook%20and%20would%20like%20to%20request%20a%20cleaning%20quote. |
+
+The WhatsApp link opens a chat with Guardian's usual WhatsApp number
+(+27 65 965 6991). The message is filled in for the customer:
+
+> Hi Guardian Enviroclean, I found you on Facebook and would like to
+> request a cleaning quote.
+
+Use each quote link only in its own place. The `utm_content` value tells
+Guardian which placement the customer clicked.
+
+**Page/profile setup checklist**
+
+- [ ] Set the Page action button to the **page_button** link above.
+- [ ] Put the **bio** link in the Intro/About website field.
+- [ ] Use the **post** link in posts that invite people to get a quote.
+- [ ] Connect the Guardian WhatsApp number (+27 65 965 6991) to the Page
+      (in the Page settings, under linked accounts; Meta moves this
+      menu from time to time), or use the WhatsApp link
+      above wherever a link is allowed.
+- [ ] Check whether **Appointments** is available for the Page. It is
+      optional and not connected to the Guardian system.
+- [ ] Open each link once from a phone to make sure it works.
+
+**What the Guardian system records.** For a quote request submitted on
+the website:
+
+- `acquisition_channel = FACEBOOK` only when the visitor arrived through
+  one of the tagged links above (`utm_source=facebook`). An ordinary
+  Facebook link without the tag is recorded as unknown.
+- `acquisition_detail = page_button / post / bio` only when the tagged
+  link names one of those placements. Otherwise it is empty.
+- Cecil's new-enquiry email shows a line such as
+  `Acquisition: Facebook · Post` under `Source: Website`. If the
+  enquiry is not attributed, the line is left out.
+- This survives browsing in the same browser tab. A visitor who lands
+  on the homepage from Facebook and opens Request a Quote later is still
+  attributed to Facebook.
+- `source` stays `WEBSITE`. Facebook is where the customer found
+  Guardian, not how the enquiry came in.
+
+**What it does not record**
+
+- WhatsApp chats started from Facebook. They do not pass through the
+  website, so nothing is recorded automatically. Cecil can recognise
+  them by the prefilled message and classify them by hand later in the
+  Job Manager.
+- Facebook Messenger enquiries, comments and calls.
+- Visitors who come from an untagged Facebook link, e.g. a customer
+  sharing the website in a comment or on their own profile.
+- Visitors who change tabs, open the site in another browser, or come
+  back on another day without a tagged link.
+- Raw UTM values, the `fbclid` value, or any tracking or analytics
+  data. There are no cookies, no Meta Pixel and no third-party
+  analytics.
+- Any other channel (Google, Instagram etc.) or "direct" traffic. These
+  are stored as unknown (empty).
 
 ## Known limitations
 
@@ -100,6 +184,9 @@ _TBD._
 ## Out of scope
 
 - Facebook Marketplace (listing or automation) — not being pursued.
+- Automatic attribution of WhatsApp, Messenger or other off-website
+  enquiries.
+- Social-media analytics dashboards.
 
 ## Future enhancements
 

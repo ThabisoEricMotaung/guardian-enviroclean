@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
+import { NO_ACQUISITION, readStoredAcquisition } from "@/lib/acquisition";
 import { QuoteRequestSuccess } from "@/components/quote-request-success";
 import { TurnstileWidget } from "@/components/turnstile-widget";
 import type { QuoteRequestFieldErrors } from "@/lib/validation/quote-request";
@@ -117,6 +118,18 @@ export function RequestQuoteForm() {
     requestBody.append(HONEYPOT_FIELD, String(formData.get(HONEYPOT_FIELD) ?? ""));
     for (const photo of photos) {
       requestBody.append("photos", photo.file, photo.file.name);
+    }
+    // Facebook attribution captured on landing (see AcquisitionCapture).
+    // Only sent when recognised; the server re-validates it regardless.
+    let acquisition = NO_ACQUISITION;
+    try {
+      acquisition = readStoredAcquisition(window.sessionStorage);
+    } catch {
+      // Storage blocked — submit as an ordinary unattributed enquiry.
+    }
+    if (acquisition.channel) {
+      requestBody.append("acquisition_channel", acquisition.channel);
+      if (acquisition.detail) requestBody.append("acquisition_detail", acquisition.detail);
     }
 
     try {
