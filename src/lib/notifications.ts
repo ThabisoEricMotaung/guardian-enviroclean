@@ -2,6 +2,8 @@ import "server-only";
 
 import { Resend } from "resend";
 import type { FacebookPlacement, WebsiteAcquisition } from "./acquisition";
+import { SERVICE_LABELS, type DetailAnswer } from "./quote-details";
+import type { JobService } from "./validation/quote-request";
 
 // Best-effort email notification to Cecil after an enquiry is already
 // safely persisted. Every failure path here is logged and swallowed —
@@ -14,6 +16,10 @@ export type EnquiryNotification = {
   service: string;
   area: string;
   description: string;
+  // Validated structured answers + the customer's notes, or null for an
+  // unstructured (OTHER / legacy) request, which shows `description`.
+  details: readonly DetailAnswer[] | null;
+  notes: string | null;
   photosRequested: number;
   photosAccepted: number;
   // Server-normalised (see src/lib/acquisition.ts) — never raw request input.
@@ -38,18 +44,23 @@ function buildEmail(input: EnquiryNotification): { subject: string; text: string
       ? "Photos: none attached."
       : `Photos: ${input.photosAccepted} of ${input.photosRequested} received successfully.`;
 
-  const subject = `New Guardian quote request — ${input.service}`;
+  // Structured details stay out of the subject so it remains short in
+  // mobile notifications; they're listed in the body.
+  const serviceLabel = SERVICE_LABELS[input.service as JobService] ?? input.service;
+  const subject = `New Guardian quote request — ${serviceLabel}`;
   const acquisition = acquisitionLine(input.acquisition);
 
   const text = [
     `New quote request from ${input.customerName}`,
     "",
     `Phone: ${input.phone}`,
-    `Service: ${input.service}`,
+    `Service: ${serviceLabel}`,
+    ...(input.details ?? []).map((answer) => `${answer.label}: ${answer.value}`),
     `Area: ${input.area}`,
     "",
-    "Description:",
-    input.description,
+    ...(input.details
+      ? ["Notes:", input.notes ?? "None given."]
+      : ["Description:", input.description]),
     "",
     photosLine,
     // Source (how the enquiry arrived) and acquisition (where the

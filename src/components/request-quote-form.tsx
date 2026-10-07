@@ -5,7 +5,13 @@ import { PHONE_INTL_DISPLAY, whatsappLink } from "@/lib/contact";
 import { NO_ACQUISITION, readStoredAcquisition } from "@/lib/acquisition";
 import { QuoteRequestSuccess } from "@/components/quote-request-success";
 import { TurnstileWidget } from "@/components/turnstile-widget";
-import type { QuoteRequestFieldErrors } from "@/lib/validation/quote-request";
+import type { JobService, QuoteRequestFieldErrors } from "@/lib/validation/quote-request";
+import {
+  MAX_NOTES_LENGTH,
+  OTHER_CODE,
+  SERVICE_QUESTIONS,
+  type DetailField,
+} from "@/lib/quote-details";
 import { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_TOTAL_PHOTO_BYTES } from "@/lib/validation/photo";
 
 // Bait field name — see src/app/api/quote-requests/route.ts for why it's
@@ -33,11 +39,52 @@ const fieldClasses =
 
 const fieldErrorClasses = "mt-1.5 text-sm text-red-600";
 
+// A native radio presented as a large selection card (44px+ tall).
+// Keyboard behaviour (Tab into the group, arrow keys between options)
+// is the browser's own; the card shows a visible outline on keyboard focus.
+function ChoiceCard({
+  name,
+  value,
+  label,
+  checked,
+  onChange,
+  errorId,
+}: {
+  name: string;
+  value: string;
+  label: string;
+  checked: boolean;
+  onChange: () => void;
+  errorId?: string;
+}) {
+  return (
+    <label
+      className={`flex min-h-11 cursor-pointer items-center gap-3 rounded-[3px] border px-4 py-3 text-sm transition has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--guardian-deep)] ${
+        checked
+          ? "border-[var(--guardian-deep)] bg-[var(--guardian-deep)]/[0.05] text-[var(--foreground)]"
+          : "border-[var(--line)] text-[var(--foreground)] hover:border-[var(--foreground)]/40"
+      }`}
+    >
+      <input
+        type="radio"
+        name={name}
+        value={value}
+        checked={checked}
+        onChange={onChange}
+        aria-describedby={errorId}
+        className="h-4 w-4 shrink-0 accent-[var(--guardian-deep)]"
+      />
+      {label}
+    </label>
+  );
+}
+
 export function RequestQuoteForm() {
   const serviceGroupName = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [service, setService] = useState<string | null>(null);
+  const [details, setDetails] = useState<Partial<Record<DetailField, string>>>({});
   const [photos, setPhotos] = useState<PendingPhoto[]>([]);
   const [status, setStatus] = useState<SubmitStatus>("idle");
   const [fieldErrors, setFieldErrors] = useState<QuoteRequestFieldErrors>({});
@@ -56,6 +103,24 @@ export function RequestQuoteForm() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Only the chosen service's questions are shown and submitted.
+  const questions = service ? (SERVICE_QUESTIONS[service as JobService] ?? []) : [];
+  const structured = questions.length > 0;
+  const notesRequired = questions.some((q) => details[q.field] === OTHER_CODE);
+
+  function chooseService(value: string) {
+    if (value === service) return;
+    setService(value);
+    // Never carry one service's answers over to another.
+    setDetails({});
+    setFieldErrors(({ name, phone, area }) => ({ name, phone, area }));
+  }
+
+  function chooseDetail(field: DetailField, code: string) {
+    setDetails((current) => ({ ...current, [field]: code }));
+    setFieldErrors((current) => ({ ...current, [field]: undefined, description: undefined }));
+  }
 
   function addPhotos(fileList: FileList | null) {
     if (!fileList) return;
@@ -99,6 +164,18 @@ export function RequestQuoteForm() {
       setFieldErrors({ service: "Please choose a service." });
       return;
     }
+    // Mirrors the server's rules (which remain authoritative).
+    const detailErrors: QuoteRequestFieldErrors = {};
+    for (const question of questions) {
+      if (!details[question.field]) detailErrors[question.field] = question.requiredMessage;
+    }
+    if (notesRequired && !description.trim()) {
+      detailErrors.description = "Please tell us a bit more about the job.";
+    }
+    if (Object.keys(detailErrors).length > 0) {
+      setFieldErrors(detailErrors);
+      return;
+    }
     if (!turnstileToken) {
       setServerError("Please complete the verification check above.");
       return;
@@ -112,6 +189,11 @@ export function RequestQuoteForm() {
     requestBody.append("service", service);
     requestBody.append("area", area);
     requestBody.append("description", description);
+    // Every question for the chosen service is sent, even if unanswered, so
+    // the server never mistakes this for a legacy (pre-structured) request.
+    for (const question of questions) {
+      requestBody.append(question.field, details[question.field] ?? "");
+    }
     requestBody.append("cf-turnstile-response", turnstileToken);
     // Honeypot: real users never see or fill this (see the hidden field
     // below); always sent empty for a genuine submission.
@@ -257,32 +339,64 @@ export function RequestQuoteForm() {
         </legend>
         <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {SERVICE_OPTIONS.map((option) => {
-            const checked = service === option.value;
             return (
-              <label
+              <ChoiceCard
                 key={option.value}
-                className={`flex cursor-pointer items-center gap-3 rounded-[3px] border px-4 py-3 text-sm transition ${
-                  checked
-                    ? "border-[var(--guardian-deep)] bg-[var(--guardian-deep)]/[0.05] text-[var(--foreground)]"
-                    : "border-[var(--line)] text-[var(--foreground)] hover:border-[var(--foreground)]/40"
-                }`}
-              >
-                <input
-                  type="radio"
-                  name={serviceGroupName}
-                  value={option.value}
-                  checked={checked}
-                  onChange={() => setService(option.value)}
-                  className="h-4 w-4 shrink-0 accent-[var(--guardian-deep)]"
-                />
-                {option.label}
-              </label>
+                name={serviceGroupName}
+                value={option.value}
+                label={option.label}
+                checked={service === option.value}
+                onChange={() => chooseService(option.value)}
+                errorId={fieldErrors.service ? "service-error" : undefined}
+              />
             );
           })}
         </div>
         {fieldErrors.service && (
-          <p className={fieldErrorClasses}>{fieldErrors.service}</p>
+          <p id="service-error" className={fieldErrorClasses}>
+            {fieldErrors.service}
+          </p>
         )}
+
+        {/* Revealed for the chosen service only. Focus is deliberately
+            left where it is; the questions simply appear below. */}
+        {questions.map((question) => {
+          const error = fieldErrors[question.field];
+          const errorId = `${question.field}-error`;
+          const wide = question.options.some((option) => option.label.length > 20);
+          return (
+            <fieldset key={question.field} className="mt-6">
+              <legend className="text-sm font-medium text-[var(--foreground)]">
+                {question.label}
+              </legend>
+              <div
+                className={`mt-2 grid gap-2 ${wide ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2 sm:grid-cols-4"}`}
+              >
+                {question.options.map((option) => (
+                  <ChoiceCard
+                    key={option.code}
+                    name={`${serviceGroupName}-${question.field}`}
+                    value={option.code}
+                    label={option.label}
+                    checked={details[question.field] === option.code}
+                    onChange={() => chooseDetail(question.field, option.code)}
+                    errorId={error ? errorId : undefined}
+                  />
+                ))}
+              </div>
+              {details[question.field] === OTHER_CODE && (
+                <p className="mt-2 text-sm font-medium text-[var(--guardian-deep)]">
+                  Tell us a bit more below.
+                </p>
+              )}
+              {error && (
+                <p id={errorId} className={fieldErrorClasses}>
+                  {error}
+                </p>
+              )}
+            </fieldset>
+          );
+        })}
       </fieldset>
 
       {/* Section 3 — Area */}
@@ -319,15 +433,35 @@ export function RequestQuoteForm() {
           Tell Us About The Job
         </legend>
         <div className="mt-4">
+          {structured && (
+            <>
+              <label htmlFor="description" className="block text-sm font-medium text-[var(--foreground)]">
+                Anything Cecil should know? {notesRequired ? "(required)" : "(optional)"}
+              </label>
+              <p id="description-help" className="mt-1 text-sm text-[var(--muted)]">
+                How many items? Any stains, odours, pet hair, or anything else
+                that may help us prepare your quote.
+              </p>
+            </>
+          )}
           <textarea
+            id="description"
             name="description"
             rows={4}
-            placeholder="e.g. 3-seater couch and two chairs, with some stains on the cushions."
-            required
-            maxLength={2000}
+            placeholder={
+              structured
+                ? undefined
+                : "e.g. 3-seater couch and two chairs, with some stains on the cushions."
+            }
+            required={!structured || notesRequired}
+            maxLength={structured ? MAX_NOTES_LENGTH : 2000}
             className={fieldClasses}
             aria-invalid={Boolean(fieldErrors.description)}
-            aria-describedby={fieldErrors.description ? "description-error" : undefined}
+            aria-describedby={
+              [structured && "description-help", fieldErrors.description && "description-error"]
+                .filter(Boolean)
+                .join(" ") || undefined
+            }
           />
           {fieldErrors.description && (
             <p id="description-error" className={fieldErrorClasses}>

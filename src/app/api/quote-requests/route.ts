@@ -7,6 +7,7 @@ import { buildJobPhotoKey, deleteJobPhoto, uploadJobPhoto } from "@/lib/storage"
 import { verifyTurnstileToken } from "@/lib/turnstile";
 import { notifyCecilOfEnquiry } from "@/lib/notifications";
 import { normaliseSubmittedAcquisition } from "@/lib/acquisition";
+import { DETAIL_FIELDS } from "@/lib/quote-details";
 
 // Public endpoint — prospective customers must reach this without an
 // account. See docs/neon-foundation.md, "Quote Request Pipeline — Pass 3"
@@ -66,6 +67,9 @@ export async function POST(request: NextRequest) {
     service: formData.get("service"),
     area: formData.get("area"),
     description: formData.get("description"),
+    // Absent keys stay null — that's how a legacy (pre-structured) request
+    // is recognised. See src/lib/quote-details.ts.
+    details: Object.fromEntries(DETAIL_FIELDS.map((field) => [field, formData.get(field)])),
   });
 
   if (!result.ok) {
@@ -149,6 +153,8 @@ export async function POST(request: NextRequest) {
       service: result.data.service,
       area: result.data.area,
       description: result.data.description,
+      details: result.details,
+      notes: result.notes,
       photosRequested: requestedCount,
       photosAccepted: acceptedCount,
       acquisition,

@@ -449,6 +449,8 @@ describe("POST /api/quote-requests — Cecil notification", () => {
       photosRequested: 0,
       photosAccepted: 0,
       acquisition: { channel: null, detail: null },
+      details: null,
+      notes: null,
     });
   });
 
@@ -466,6 +468,8 @@ describe("POST /api/quote-requests — Cecil notification", () => {
         "area",
         "customerName",
         "description",
+        "details",
+        "notes",
         "phone",
         "photosAccepted",
         "photosRequested",
@@ -637,5 +641,142 @@ describe("POST /api/quote-requests — acquisition attribution", () => {
       channel: null,
       detail: null,
     });
+  });
+});
+
+describe("POST /api/quote-requests — structured quote details", () => {
+  const sofaFields = {
+    ...validFields,
+    service: "SOFA_COUCH",
+    sofa_type: "three_seater",
+    sofa_material: "leather",
+    description: "Red wine stain on one cushion.",
+  };
+
+  it("persists the composed description through the unchanged persistence call", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(multipartRequest(sofaFields));
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(insertWebsiteEnquiry).toHaveBeenCalledWith(
+      {
+        customerName: "Jane Doe",
+        phone: "0821234567",
+        service: "SOFA_COUCH",
+        area: "Menlyn, Pretoria",
+        description: "Sofa type: 3 seater\nMaterial: Leather\nNotes: Red wine stain on one cushion.",
+      },
+      { channel: null, detail: null },
+    );
+  });
+
+  it("passes validated details and notes to Cecil's notification", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(multipartRequest({ ...sofaFields, description: "" }));
+
+    const call = notifyCecilOfEnquiry.mock.calls[0][0];
+    expect(call.details.map((d: { label: string; value: string }) => `${d.label}: ${d.value}`)).toEqual([
+      "Sofa type: 3 seater",
+      "Material: Leather",
+    ]);
+    expect(call.notes).toBeNull();
+    expect(call.description).toBe("Sofa type: 3 seater\nMaterial: Leather");
+  });
+
+  it.each([
+    ["a tampered code", { sofa_type: "throne" }, "sofa_type"],
+    ["a missing answer", { sofa_material: "" }, "sofa_material"],
+    ["a stale detail from another service", { car_vehicle: "sedan" }, "service"],
+  ])("rejects %s with 422 and persists nothing", async (_label, override, errorKey) => {
+    const response = await POST(multipartRequest({ ...sofaFields, ...override }));
+
+    expect(response.status).toBe(422);
+    const payload = await response.json();
+    expect(payload.ok).toBe(false);
+    expect(payload.fieldErrors[errorKey]).toBeTruthy();
+    expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("does not let a partially structured request use the legacy fallback", async () => {
+    const partial: Record<string, string> = { ...sofaFields };
+    delete partial.sofa_material;
+
+    const response = await POST(multipartRequest(partial));
+
+    expect(response.status).toBe(422);
+    expect((await response.json()).fieldErrors).toEqual({ sofa_material: "Please choose the material." });
+    expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("requires notes when an answer is Other", async () => {
+    const response = await POST(
+      multipartRequest({ ...validFields, mattress_size: "other", description: "" }),
+    );
+
+    expect(response.status).toBe(422);
+    expect((await response.json()).fieldErrors).toEqual({
+      description: "Please tell us a bit more about the job.",
+    });
+  });
+
+  it("accepts a legacy-shaped request (old browser session) unchanged", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    const response = await POST(multipartRequest({ ...validFields, service: "CAR_INTERIOR" }));
+
+    expect(response.status).toBe(201);
+    expect(insertWebsiteEnquiry.mock.calls[0][0].description).toBe(
+      "Queen mattress, some staining on one side.",
+    );
+    expect(notifyCecilOfEnquiry.mock.calls[0][0]).toMatchObject({ details: null, notes: null });
+  });
+
+  it("keeps Facebook attribution alongside structured details", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+
+    await POST(
+      multipartRequest({ ...sofaFields, acquisition_channel: "FACEBOOK", acquisition_detail: "post" }),
+    );
+
+    expect(insertWebsiteEnquiry.mock.calls[0][1]).toEqual({ channel: "FACEBOOK", detail: "post" });
+    expect(notifyCecilOfEnquiry.mock.calls[0][0].acquisition).toEqual({
+      channel: "FACEBOOK",
+      detail: "post",
+    });
+  });
+
+  it("still short-circuits on a populated honeypot before validating details", async () => {
+    const response = await POST(
+      multipartRequest({ ...sofaFields, sofa_type: "throne", website: "http://spam.example" }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+    expect(notifyCecilOfEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a failed Turnstile check before validating details", async () => {
+    verifyTurnstileToken.mockResolvedValueOnce({ ok: false });
+
+    const response = await POST(multipartRequest(sofaFields));
+
+    expect(response.status).toBe(400);
+    expect(insertWebsiteEnquiry).not.toHaveBeenCalled();
+  });
+
+  it("still attaches photos to a structured enquiry", async () => {
+    insertWebsiteEnquiry.mockResolvedValueOnce({ id: JOB_ID });
+    uploadJobPhoto.mockResolvedValueOnce(undefined);
+    insertJobPhoto.mockResolvedValueOnce(undefined);
+
+    const response = await POST(multipartRequest(sofaFields, [jpegFile("couch.jpg")]));
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ ok: true, photos: { requested: 1, accepted: 1 } });
+    expect(insertJobPhoto).toHaveBeenCalledWith(JOB_ID, expect.stringMatching(`^quote-requests/${JOB_ID}/`));
   });
 });

@@ -21,6 +21,8 @@ const baseInput = {
   photosRequested: 0,
   photosAccepted: 0,
   acquisition: { channel: null, detail: null },
+  details: null,
+  notes: null,
 } as const;
 
 describe("notifyCecilOfEnquiry", () => {
@@ -83,10 +85,11 @@ describe("notifyCecilOfEnquiry", () => {
     const call = sendMock.mock.calls[0][0];
     expect(call.to).toEqual(["cecil@guardianenviroclean.example"]);
     expect(call.from).toBe("quotes@guardianenviroclean.example");
-    expect(call.subject).toBe("New Guardian quote request — MATTRESS");
+    expect(call.subject).toBe("New Guardian quote request — Mattress");
     expect(call.text).toContain("Jane Doe");
     expect(call.text).toContain("0821234567");
-    expect(call.text).toContain("MATTRESS");
+    expect(call.text).toContain("Service: Mattress\n");
+    expect(call.text).not.toContain("MATTRESS");
     expect(call.text).toContain("Menlyn, Pretoria");
     expect(call.text).toContain("Queen mattress, some staining.");
     expect(call.text).toContain("Photos: 1 of 2 received successfully.");
@@ -170,5 +173,82 @@ describe("notifyCecilOfEnquiry", () => {
     sendMock.mockRejectedValueOnce(new Error("network down"));
 
     await expect(notifyCecilOfEnquiry(baseInput)).resolves.toBeUndefined();
+  });
+});
+
+describe("notifyCecilOfEnquiry — structured details", () => {
+  const sofa = {
+    ...baseInput,
+    service: "SOFA_COUCH",
+    description: "Sofa type: 3 seater\nMaterial: Leather\nNotes: Red wine stain on one cushion.",
+    details: [
+      { field: "sofa_type", label: "Sofa type", code: "three_seater", value: "3 seater" },
+      { field: "sofa_material", label: "Material", code: "leather", value: "Leather" },
+    ],
+    notes: "Red wine stain on one cushion.",
+  } as const;
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    vi.stubEnv("CECIL_NOTIFICATION_EMAIL", "cecil@guardianenviroclean.example");
+    vi.stubEnv("RESEND_FROM_EMAIL", "quotes@guardianenviroclean.example");
+    sendMock.mockResolvedValue({ data: { id: "abc" }, error: null });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("lists readable details in the body and keeps the subject concise", async () => {
+    await notifyCecilOfEnquiry(sofa);
+
+    const { subject, text } = sendMock.mock.calls[0][0];
+    expect(subject).toBe("New Guardian quote request — Sofa & couch");
+    expect(text).toBe(
+      [
+        "New quote request from Jane Doe",
+        "",
+        "Phone: 0821234567",
+        "Service: Sofa & couch",
+        "Sofa type: 3 seater",
+        "Material: Leather",
+        "Area: Menlyn, Pretoria",
+        "",
+        "Notes:",
+        "Red wine stain on one cushion.",
+        "",
+        "Photos: none attached.",
+        "Source: Website",
+      ].join("\n"),
+    );
+    expect(text).not.toMatch(/three_seater|SOFA_COUCH|Description:/);
+  });
+
+  it("shows None given. in the email when no notes were supplied", async () => {
+    await notifyCecilOfEnquiry({ ...sofa, notes: null });
+
+    expect(sendMock.mock.calls[0][0].text).toContain("Notes:\nNone given.\n");
+  });
+
+  it("keeps the Facebook acquisition line after the structured details", async () => {
+    await notifyCecilOfEnquiry({ ...sofa, acquisition: { channel: "FACEBOOK", detail: "post" } });
+
+    expect(sendMock.mock.calls[0][0].text).toMatch(/Source: Website\nAcquisition: Facebook · Post$/);
+  });
+
+  it.each([
+    ["MATTRESS", "Mattress"],
+    ["CARPET_RUG", "Carpet & rug"],
+    ["CAR_INTERIOR", "Car interior"],
+    ["OTHER", "Other / not sure"],
+  ] as const)("uses a readable label for %s and the Description block when unstructured", async (service, label) => {
+    await notifyCecilOfEnquiry({ ...baseInput, service });
+
+    const { subject, text } = sendMock.mock.calls[0][0];
+    expect(subject).toBe(`New Guardian quote request — ${label}`);
+    expect(text).toContain(
+      `Service: ${label}\nArea: Menlyn, Pretoria\n\nDescription:\nQueen mattress, some staining.`,
+    );
   });
 });

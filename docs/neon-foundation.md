@@ -33,7 +33,9 @@ No ORM — see **Database access** below for why.
 - `area`, `description` — nullable `text`. The **website form** validates
   these as required before it will submit; the **database** allows them
   to be null so Cecil can create a manual WhatsApp/referral enquiry
-  before every detail is known and fill the rest in later.
+  before every detail is known and fill the rest in later. For a
+  structured website request, `description` holds a server-composed
+  summary — see "Structured quote details" below.
 - `service` — `text not null`, constrained to `MATTRESS`, `SOFA_COUCH`,
   `CARPET_RUG`, `CAR_INTERIOR`, `OTHER` (the request-quote form's
   "Other / Not Sure" option)
@@ -389,3 +391,49 @@ process photos → notify Cecil → respond`.
 6. Configure real Cloudflare Turnstile and Resend credentials (site
    verified in Resend, widget registered in Cloudflare) before any
    public launch — see the report for this pass for the exact list.
+
+## Structured quote details
+
+After the customer picks a service, the request-quote form asks a few
+fixed questions for that service (mattress size; sofa type and
+material; vehicle type and seat material; carpet/rug size). `OTHER`
+keeps the free-text description as before. The questions, answer codes
+and display labels are defined once in `src/lib/quote-details.ts`,
+shared by the form and the server.
+
+**No migration — stored in `description`.** The server validates each
+submitted code against those definitions, then composes the persisted
+`jobs.description` from the fixed display labels, followed by the
+customer's optional notes:
+
+```
+Sofa type: 3 seater
+Material: Leather
+Notes: Red wine stain on one cushion.
+```
+
+- Only server-controlled labels populate the structured lines. Customer
+  text appears only after `Notes:`. With no notes, the `Notes:` line is
+  omitted (no filler).
+- Notes are capped at 1,800 characters, so the composed text always
+  fits the existing 2,000-character description limit.
+- An answer of "Other" makes the notes required; "Not sure" is a
+  complete answer.
+- A code that isn't in the definitions, a missing answer, or an answer
+  belonging to a different service is rejected with a 422. Nothing
+  unvalidated is persisted.
+- **Legacy request shape:** if none of the detail fields are submitted
+  at all (e.g. a browser still running the earlier form during a
+  deploy), the request is handled exactly as before: free-text
+  description required and stored verbatim. Sending any detail field
+  switches to the structured rules, so a partial structured request
+  never falls back to the legacy path.
+- Cecil's email lists the answers under `Service:`, then `Notes:`
+  (`None given.` in the email only). The subject stays
+  `New Guardian quote request — <service label>`.
+
+**Nothing may parse the stored text.** It's for people to read, and
+the future Job Manager should simply display it. Structured database
+storage (e.g. a nullable `service_details jsonb` column) is deferred
+until the Job Manager has an actual requirement to filter or report by
+these answers. Rows from before that point would stay text-only.

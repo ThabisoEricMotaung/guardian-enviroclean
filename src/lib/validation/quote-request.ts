@@ -3,6 +3,14 @@
 // gate, not the form's HTML `required`/`maxLength` attributes, which are
 // a UX nicety only.
 
+import {
+  MAX_NOTES_LENGTH,
+  composeDescription,
+  validateServiceDetails,
+  type DetailAnswer,
+  type DetailField,
+} from "../quote-details";
+
 export const JOB_SERVICES = [
   "MATTRESS",
   "SOFA_COUCH",
@@ -22,11 +30,20 @@ export type QuoteRequestData = {
 };
 
 export type QuoteRequestFieldErrors = Partial<
-  Record<"name" | "phone" | "service" | "area" | "description", string>
+  Record<"name" | "phone" | "service" | "area" | "description" | DetailField, string>
 >;
 
+// `data.description` is what gets persisted: the customer's free text for
+// an unstructured request, or the composed structured summary (see
+// src/lib/quote-details.ts). `details`/`notes` are null for an
+// unstructured request and exist only for presentation (Cecil's email).
 export type QuoteRequestValidationResult =
-  | { ok: true; data: QuoteRequestData }
+  | {
+      ok: true;
+      data: QuoteRequestData;
+      details: DetailAnswer[] | null;
+      notes: string | null;
+    }
   | { ok: false; errors: QuoteRequestFieldErrors };
 
 // Generous but not unbounded — these are `text` columns in Postgres, but
@@ -94,17 +111,38 @@ export function validateQuoteRequest(
     errors.area = "Area is too long.";
   }
 
+  // For a structured request this field carries the customer's notes.
   const description = readTrimmedString(record.description);
-  if (!description) {
+
+  const submittedDetails =
+    typeof record.details === "object" && record.details !== null
+      ? (record.details as Partial<Record<DetailField, unknown>>)
+      : {};
+  const details = errors.service
+    ? ({ mode: "unstructured" } as const)
+    : validateServiceDetails(service as JobService, submittedDetails);
+
+  if (details.mode === "invalid") {
+    Object.assign(errors, details.errors);
+  }
+
+  if (details.mode !== "unstructured") {
+    if (details.mode === "structured" && details.notesRequired && !description) {
+      errors.description = "Please tell us a bit more about the job.";
+    } else if (description.length > MAX_NOTES_LENGTH) {
+      errors.description = "Notes are too long.";
+    }
+  } else if (!description) {
     errors.description = "Please tell us about the job.";
   } else if (description.length > MAX_LENGTH.description) {
     errors.description = "Description is too long.";
   }
 
-  if (Object.keys(errors).length > 0) {
+  if (Object.keys(errors).length > 0 || details.mode === "invalid") {
     return { ok: false, errors };
   }
 
+  const structured = details.mode === "structured";
   return {
     ok: true,
     data: {
@@ -112,7 +150,9 @@ export function validateQuoteRequest(
       phone,
       service: service as JobService,
       area,
-      description,
+      description: structured ? composeDescription(details.answers, description) : description,
     },
+    details: structured ? details.answers : null,
+    notes: structured ? description || null : null,
   };
 }
